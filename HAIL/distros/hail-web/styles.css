@@ -798,3 +798,17 @@ body::before {
   }
 }
 
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes borderPulse {
+  0% { border-color: rgba(139, 92, 246, 0.4); }
+  100% { border-color: rgba(139, 92, 246, 0.8); }
+}
+
+.loading-pulse {
+  animation: blink 0.5s infinite alternate;
+}
+
