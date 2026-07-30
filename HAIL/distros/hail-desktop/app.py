@@ -69,10 +69,10 @@ _RESEARCH_UA = "HAIL-Cognitive-Studio/1.0 (academic-research-mode; local-kernel)
 _RESEARCH_TIMEOUT = 15
 
 _QUERY_STRIP = {
-    "how", "what", "why", "when", "where", "who", "which", "does", "do",
-    "is", "are", "was", "were", "can", "could", "should", "would", "will",
-    "the", "a", "an", "to", "for", "of", "in", "on", "at", "by", "with",
-    "and", "or", "but", "more", "most", "best", "good", "some", "any",
+    "how", "what", "why", "when", "where", "who", "which", "does", "do", "did",
+    "is", "are", "was", "were", "can", "could", "should", "would", "will", "has", "have", "had",
+    "the", "a", "an", "to", "for", "of", "in", "on", "at", "by", "with", "from",
+    "and", "or", "but", "more", "most", "best", "good", "some", "any", "many", "much",
     "i", "me", "my", "you", "your", "we", "us", "it", "its", "create",
     "generate", "write", "make", "document", "doc", "about"
 }
@@ -114,47 +114,53 @@ def _fetch_wikipedia_full_article(subject: str) -> dict:
     search_term = _clean_subject_for_search(subject)
     print(f"[HAIL Wiki Search] Subject: '{subject}' -> Clean Search Term: '{search_term}'")
     
-    # 1. Primary OpenSearch
-    search_params = parse.urlencode({
-        "action": "opensearch",
-        "search": search_term,
-        "limit": "3",
-        "namespace": "0",
-        "format": "json"
-    })
-    search_url = f"https://en.wikipedia.org/w/api.php?{search_params}"
-    resolved_titles = [search_term]
-    try:
-        s_data = _http_get_json(search_url)
-        if s_data and len(s_data) > 1 and s_data[1]:
-            resolved_titles = s_data[1]
-            print(f"[HAIL Wiki Search] OpenSearch resolved candidates: {resolved_titles}")
-    except Exception as e:
-        print(f"[Wikipedia OpenSearch Error] {e}")
-
-    for r_title in resolved_titles:
-        params = parse.urlencode({
-            "action": "query",
-            "prop": "extracts",
-            "exlimit": "1",
-            "explaintext": "1",
-            "redirects": "1",
-            "titles": r_title,
+    def do_search(term: str) -> dict:
+        search_params = parse.urlencode({
+            "action": "opensearch",
+            "search": term,
+            "limit": "3",
+            "namespace": "0",
             "format": "json"
         })
-        url = f"https://en.wikipedia.org/w/api.php?{params}"
-        data = _http_get_json(url)
-        if not data:
-            continue
+        search_url = f"https://en.wikipedia.org/w/api.php?{search_params}"
+        resolved_titles = [term]
+        try:
+            s_data = _http_get_json(search_url)
+            if s_data and len(s_data) > 1 and s_data[1]:
+                resolved_titles = s_data[1]
+                print(f"[HAIL Wiki Search] OpenSearch resolved candidates for '{term}': {resolved_titles}")
+        except Exception as e:
+            print(f"[Wikipedia OpenSearch Error] {e}")
 
-        pages = data.get("query", {}).get("pages", {})
-        for page_id, page_data in pages.items():
-            if page_id != "-1":
-                extract = page_data.get("extract", "")
-                p_title = page_data.get("title", r_title)
-                if extract and len(extract) > 100:
-                    return {"title": p_title, "full_text": extract}
+        for r_title in resolved_titles:
+            params = parse.urlencode({
+                "action": "query",
+                "prop": "extracts",
+                "exlimit": "1",
+                "explaintext": "1",
+                "redirects": "1",
+                "titles": r_title,
+                "format": "json"
+            })
+            url = f"https://en.wikipedia.org/w/api.php?{params}"
+            data = _http_get_json(url)
+            if not data:
+                continue
 
+            pages = data.get("query", {}).get("pages", {})
+            for page_id, page_data in pages.items():
+                if page_id != "-1":
+                    extract = page_data.get("extract", "")
+                    p_title = page_data.get("title", r_title)
+                    if extract and len(extract) > 100:
+                        return {"title": p_title, "full_text": extract}
+        return None
+
+    # Try clean search term first
+    res = do_search(search_term)
+    if res:
+        return res
+        
     # Fallback for Airbus A350 family queries
     if "a350" in search_term.lower():
         fallback_title = "Airbus A350"
@@ -173,6 +179,14 @@ def _fetch_wikipedia_full_article(subject: str) -> dict:
             for page_id, page_data in pages.items():
                 if page_id != "-1":
                     return {"title": page_data.get("title", fallback_title), "full_text": page_data.get("extract", "")}
+
+    # If clean search failed, try normalized query fallback
+    norm_term = _normalize_query(subject)
+    if norm_term and norm_term != search_term:
+        print(f"[HAIL Wiki Search] Fallback to normalized query: '{norm_term}'")
+        res = do_search(norm_term)
+        if res:
+            return res
 
     return {"title": search_term, "full_text": ""}
 
