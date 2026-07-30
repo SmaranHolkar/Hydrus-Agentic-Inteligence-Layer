@@ -1,0 +1,11 @@
+{
+  "name": "my-custom-skill",
+  "version": "0.1.0",
+  "description": "Boilerplate template for authoring a HAIL community or experimental skill.",
+  "author": "Community Contributor",
+  "tier": "community",
+  "permissions": ["memory:read", "memory:write"],
+  "memory_strata": ["surface"],
+  "mcp_connectors": [],
+  "entrypoint": "main.py"
+}

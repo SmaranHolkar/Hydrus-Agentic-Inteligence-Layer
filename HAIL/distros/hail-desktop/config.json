@@ -1,0 +1,10 @@
+{
+  "distro_name": "HAIL Desktop",
+  "version": "0.1.0",
+  "gpu_acceleration": true,
+  "model_runner": "ollama",
+  "model_name": "llama3:8b",
+  "quantization": "q4_k_m",
+  "storage_dir": "./desktop_memory.hcl",
+  "mcp_connectors": ["filesystem", "git-ops", "terminal"]
+}

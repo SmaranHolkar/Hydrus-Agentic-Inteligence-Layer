@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HAIL Cognitive Studio — Edge AI Memory Workspace</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Interactive Particle Background Canvas -->
+  <canvas id="bgCanvas"></canvas>
+
+  <div class="app-container">
+    <!-- Top Glass Header -->
+    <header class="top-header">
+      <div class="brand-section">
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <button id="mobileMenuBtn" class="nav-tab" style="padding: 0.25rem 0.5rem; font-size: 1rem; display: none;" title="Toggle Sidebar">☰</button>
+          <div class="logo-badge">H</div>
+          <div class="brand-name">HAIL <span>Cognitive Studio</span></div>
+        </div>
+      </div>
+
+      <!-- Center View Tabs -->
+      <nav class="view-tabs">
+        <a class="nav-tab active" data-view="chat">CHAT CONSOLE</a>
+        <a class="nav-tab" data-view="memory">MEMORY LATTICE</a>
+        <a class="nav-tab" data-view="doc">DOC PREVIEW</a>
+      </nav>
+
+      <!-- Right Unified Model Selector & Settings -->
+      <div class="model-selector-box" style="display: flex; gap: 0.5rem; align-items: center;">
+        <div id="modelContainer" style="display: flex; align-items: center; gap: 0.35rem; font-size: 11px; background: rgba(255,255,255,0.7); padding: 0.25rem 0.6rem; border-radius: 6px; border: 1px solid var(--launch-border);">
+          <span id="modelStatusDot" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e;" title="Active Engine Status"></span>
+          <span style="color: var(--launch-ink); font-weight: 600; font-size: 11px;">Model:</span>
+          <select id="unifiedModelSelect" class="select-model" style="min-width: 240px; padding: 0.2rem 0.5rem; font-size: 11px; font-weight: 500; cursor: pointer;">
+            <option value="">Loading Models...</option>
+          </select>
+        </div>
+        <button id="clearMemoriesBtn" class="nav-tab" style="padding: 0.35rem 0.65rem; font-size: 11px;">Clear Memory</button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Area -->
+    <main id="workspace" class="main-workspace" data-active-view="chat">
+      <!-- Left Sidebar: Memory Lattice & Documents Gallery -->
+      <aside class="sidebar memory-drawer">
+        <button id="newChatBtn" class="new-chat-btn">
+          <span>+</span> New Chat Session
+        </button>
+
+        <!-- Document Repository Gallery -->
+        <div class="doc-gallery-section">
+          <div class="sidebar-section-title">
+            <span>📄 Workspace Documents</span>
+            <span id="docCountBadge" style="color: var(--accent-purple); font-size: 10px;">Docs</span>
+          </div>
+          <div id="docQuickList" class="doc-list">
+            <div class="doc-item active" data-doc="seatbelt_dangers">
+              <span class="doc-item-icon">📄</span>
+              <span>seatbelt_dangers.md</span>
+            </div>
+            <div class="doc-item" data-doc="hail_architecture">
+              <span class="doc-item-icon">📄</span>
+              <span>hail_architecture.md</span>
+            </div>
+            <div class="doc-item" data-doc="cognitive_gateway">
+              <span class="doc-item-icon">📄</span>
+              <span>cognitive_gateway.md</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- HydrusMoE 4-Tier Memory & Security Telemetry Widget -->
+        <div id="moeTelemetryBox" style="background: rgba(255,255,255,0.55); border: 1px solid var(--launch-border); border-radius: var(--radius-md); padding: 0.65rem; display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.4rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 600; color: var(--launch-ink);">
+            <span>🛡️ HydrusMoE Telemetry</span>
+            <span id="moeSecurityShield" style="color: #22c55e; font-size: 10px; font-weight: 600;">🔒 AES-256</span>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; font-size: 10px;">
+            <div style="background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.25); padding: 0.25rem 0.4rem; border-radius: 4px;">
+              <span style="color: #15803d; font-weight: 600;">GPU VRAM:</span> <span id="vramTelemetry">0MB</span>
+            </div>
+            <div style="background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.25); padding: 0.25rem 0.4rem; border-radius: 4px;">
+              <span style="color: #a16207; font-weight: 600;">Host RAM:</span> <span id="ramTelemetry">0MB</span>
+            </div>
+            <div style="background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.25); padding: 0.25rem 0.4rem; border-radius: 4px;">
+              <span style="color: #1d4ed8; font-weight: 600;">SSD Hit:</span> <span id="ssdTelemetry">100%</span>
+            </div>
+            <div style="background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.25); padding: 0.25rem 0.4rem; border-radius: 4px;">
+              <span style="color: #7e22ce; font-weight: 600;">Prefetch:</span> <span id="prefetchTelemetry">85%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stratified Memory Lattice Graph & Memory Nodes -->
+        <div class="memory-section" style="flex: 1; display: flex; flex-direction: column; gap: 0.75rem;">
+          <div class="sidebar-section-title">
+            <span>🧠 Stratified Memory</span>
+            <span id="memoryBadge" class="memory-tag" style="margin:0;">0 Facts</span>
+          </div>
+
+          <!-- Live Lattice Graph Canvas -->
+          <div style="border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-glass);">
+            <canvas id="latticeCanvas" style="width: 100%; height: 110px; background: rgba(0,0,0,0.3); display: block;"></canvas>
+          </div>
+
+          <div id="memoryList" class="memory-box" style="flex: 1; overflow-y: auto;"></div>
+        </div>
+      </aside>
+
+      <!-- Center Panel: AI Chat Arena -->
+      <section id="chat" class="chat-panel chat-window">
+        <div id="chatFeed" class="chat-messages">
+          <div class="welcome-hero">
+            <h1 class="welcome-title">HAIL Cognitive Studio</h1>
+            <p class="welcome-subtitle">Edge-native local AI engine grounded by Stratified Memory Lattice &amp; Active Security Gateway.</p>
+
+            <div class="prompt-suggestions">
+              <button class="suggestion-card" data-prompt="Show preview of seatbelt_dangers.md">
+                <strong style="display:block; color:var(--accent-purple); margin-bottom:2px;">📄 View Document Preview</strong>
+                <span>Open live rendered preview of seatbelt_dangers.md</span>
+              </button>
+              <button class="suggestion-card" data-prompt="Explain HAIL System Architecture">
+                <strong style="display:block; color:var(--accent-cyan); margin-bottom:2px;">⚡ HAIL Architecture</strong>
+                <span>Learn about HCL, SML, and HydrusOPT</span>
+              </button>
+              <button class="suggestion-card" data-prompt="Show my memory facts">
+                <strong style="display:block; color:var(--accent-green); margin-bottom:2px;">🧠 Inspect Memory Lattice</strong>
+                <span>Check facts retained in surface strata</span>
+              </button>
+              <button class="suggestion-card" data-prompt="Create doc about CMG Cognitive Memory Gateway">
+                <strong style="display:block; color:var(--accent-purple); margin-bottom:2px;">🚀 Create New Document</strong>
+                <span>Generate and render new markdown doc</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat Input Field Bar -->
+        <div class="chat-input-bar">
+          <form id="chatForm" class="input-box-wrapper">
+            <input type="text" id="chatInput" placeholder="Ask HAIL anything or type 'Create doc about X'..." autocomplete="off">
+            <button type="submit" class="send-btn">Send</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- Right Panel: Live Document Preview Canvas -->
+      <aside id="docPreviewContainer" class="doc-preview-panel">
+        <div class="doc-panel-header">
+          <div class="doc-panel-title">
+            <span>📄</span>
+            <span id="docPreviewTitle">seatbelt_dangers.md</span>
+            <span id="autoSaveStatus" style="font-size: 10px; color: var(--color-lichen); opacity: 0; transition: opacity 0.3s ease; margin-left: 0.5rem; font-weight: normal;">• Autosaved</span>
+          </div>
+          <div style="display: flex; gap: 0.35rem; align-items: center;">
+            <button id="saveDocBtn" class="nav-tab" style="font-size: 10px; padding: 0.2rem 0.5rem; background: rgba(50,143,100,0.15); color: var(--color-lichen); border-color: rgba(50,143,100,0.3);" title="Save Document to Disk">💾 Save</button>
+            <button id="downloadDocBtn" class="nav-tab" style="font-size: 10px; padding: 0.2rem 0.5rem;" title="Download Markdown File">📥 Download</button>
+            <button id="deleteDocBtn" class="nav-tab" style="font-size: 10px; padding: 0.2rem 0.5rem; color: #ef4444;" title="Delete Document">🗑️</button>
+            <span style="border-left: 1px solid var(--launch-border); height: 16px; margin: 0 0.15rem;"></span>
+            <button id="tabRenderedBtn" class="nav-tab active" style="font-size: 10px; padding: 0.2rem 0.5rem;">Rendered</button>
+            <button id="tabRawBtn" class="nav-tab" style="font-size: 10px; padding: 0.2rem 0.5rem;">Raw Markdown</button>
+            <button id="closeDocPreviewBtn" class="nav-tab" style="font-size: 10px; padding: 0.2rem 0.5rem;">✕</button>
+          </div>
+        </div>
+        <div id="docPreviewContent" class="doc-panel-body markdown-body">
+          <!-- Document preview rendered markdown content -->
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

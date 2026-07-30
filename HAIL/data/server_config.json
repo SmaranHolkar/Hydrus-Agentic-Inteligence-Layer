@@ -1,0 +1,8 @@
+{
+    "active_user": "default_user",
+    "active_mode": "eval",
+    "current_model_name": "microsoft/Phi-3.5-mini-instruct",
+    "searxng_url": "http://localhost:8080",
+    "ollama_base_url": "http://localhost:11434",
+    "ollama_model": "llama3"
+}

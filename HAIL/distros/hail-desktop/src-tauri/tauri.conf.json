@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "HAIL Desktop",
+  "version": "0.1.0",
+  "identifier": "com.viverelabs.hail.desktop",
+  "build": {
+    "frontendDist": "../../distros/hail-web",
+    "devUrl": "http://localhost:8000"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "HAIL Desktop — Local AI Platform",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

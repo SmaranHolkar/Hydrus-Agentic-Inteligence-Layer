@@ -1,26 +1,38 @@
 # Model weights (can be re-downloaded via HuggingFace)
 models/
 
-# Python cache
+# Python cache & build artifacts
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
 
 # Virtual environments
 .venv/
 venv/
 env/
 
-# VS Code
+# IDE / OS
 .vscode/
-
-# OS
+.idea/
 Thumbs.db
 .DS_Store
 
-# Generated artifacts (HTML previews)
-artifacts/
+# Runtime data & temporary persistence dumps
+*.hcl
+*.json.bak
+data/*.hcl
+data/*.json
 
-# Reports (live output, not source)
-hydrusopt_report.json
+# Generated artifacts & benchmark outputs
+artifacts/
 reports/
+benchmark_history/
+*.log
+
+# Node dependencies
+node_modules/
+**/node_modules/

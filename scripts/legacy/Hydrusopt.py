@@ -7,7 +7,7 @@ Five techniques combined into one CLI tool:
   2. Mixed Precision Quantisation   → smaller file size, less RAM
     3. Metacognition Plugin           → confidence scoring + per-token recovery
     4. Hallucination Guards           → self-correction loop + semantic consistency
-    5. LLM-Only Safe Fallback         → local safe fallback when guard blocks output
+    5. Retrieval Fallback             → factual lookup when guard blocks output
 
 Works on any HuggingFace causal LM (LLaMA, Mistral, Qwen, etc.)
 
@@ -15,10 +15,7 @@ Requirements:
     pip install torch transformers accelerate bitsandbytes psutil matplotlib pandas
 
 Usage:
-    # One-flag profile (recommended)
-    python hydrusopt.py --model Qwen/Qwen2-1.5B-Instruct --profile safe
-
-    # Full optimisation + benchmark (advanced manual control)
+    # Full optimisation + benchmark
     python hydrusopt.py --model Qwen/Qwen2-1.5B-Instruct --skip-quant
 
     # Multi-model benchmark with chart
@@ -27,8 +24,8 @@ Usage:
     # Stress test + hallucination guards
     python hydrusopt.py --model Qwen/Qwen2-1.5B-Instruct --stress-test --enable-selfcorrect
 
-    # LLM-only safe mode (no external retrieval)
-    python hydrusopt.py --model Qwen/Qwen2-1.5B-Instruct --enable-metacognition
+    # Enable retrieval fallback when safety guard blocks an answer
+    python hydrusopt.py --model Qwen/Qwen2-1.5B-Instruct --enable-metacognition --enable-retrieval-fallback
 
     # Adjust aggressiveness
     python hydrusopt.py --model Qwen/Qwen2-1.5B-Instruct --linearise_ratio 0.4 --quant_bits 4
@@ -61,18 +58,20 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+import ast
+import html as _html_module
+import operator as _operator_module
+import webbrowser
 import torch
 import torch.nn as nn
 import time
 import argparse
 import copy
-import csv
 import json
 import os
-from datetime import datetime, timezone
 from urllib import parse, request
 from urllib.error import URLError, HTTPError
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any, Callable
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -105,9 +104,6 @@ BANNER = """
 ╚═╝  ╚═╝   ╚═╝   ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝        ╚═╝   
                    Make local LLMs safer. More honest. More useful.
 """
-
-# Legacy cache for deprecated retrieval path (kept for backward compatibility).
-_RETRIEVAL_CACHE: Dict[str, str] = {}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -308,23 +304,6 @@ def apply_mixed_quantisation(model, tokenizer, device, quant_bits: int = 4, verb
     if verbose:
         print(f"\n  [2/3] QUANTISATION PROFILING")
         print(f"        Profiling layer sensitivity...")
-
-    # If already BitsAndBytes-quantized at load time, skip forward-pass profiling.
-    try:
-        import bitsandbytes as bnb
-        _already_bnb = any(
-            isinstance(m, (bnb.nn.Linear4bit, bnb.nn.Linear8bitLt))
-            for m in model.modules()
-        )
-    except Exception:
-        _already_bnb = False
-
-    if _already_bnb:
-        n_layers = sum(1 for _ in model.model.layers) if hasattr(model, "model") and hasattr(model.model, "layers") else 0
-        quant_map = {i: "INT4/8 (BitsAndBytes)" for i in range(n_layers)}
-        if verbose:
-            print(f"        (Model already quantized via bitsandbytes — skipping sensitivity sweep)")
-        return model, quant_map
 
     sensitivity = profile_layer_sensitivity(model, tokenizer, device)
 
@@ -808,14 +787,6 @@ class MetacognitionPlugin(GenerationPlugin):
         triad = triangulated_factual_gate(prompt, clean_answer)
         if triad.get("should_block_missing_numeric"):
             return True, triad.get("reason", "question expects numeric answer but none was produced")
-        if triad.get("should_block_missing_factual_rank"):
-            return True, triad.get("reason", "question expects factual rank/order signal but none was produced")
-        if triad.get("should_block_numeric_contradiction"):
-            return True, triad.get("reason", "answer contains multiple conflicting numeric claims")
-        if triad.get("should_block_integer_only_violation"):
-            return True, triad.get("reason", "prompt requested one integer-only answer but output was not a single integer")
-        if triad.get("should_block_claim_verification"):
-            return True, triad.get("reason", "declarative factual claim requires external verification")
 
         return False, ""
 
@@ -823,7 +794,7 @@ class MetacognitionPlugin(GenerationPlugin):
     def safe_fallback_message(reason: str) -> str:
         return (
             "I am not confident enough to answer this accurately right now. "
-            f"Reason: {reason}. Please verify with a trusted source."
+            f"Reason: {reason}. Please verify with a trusted source or enable retrieval/search."
         )
 
     def annotated_text(self, show_entropy: bool = False) -> str:
@@ -1095,145 +1066,16 @@ def _extract_verdict_reason(text: str) -> Tuple[str, str]:
     return verdict, reason
 
 
-def _rewrite_factual_claim_to_query(prompt: str) -> str:
-    """Convert declarative factual claims into verification-style questions."""
-    raw = (prompt or "").strip()
-    if not raw:
-        return ""
-
-    # Strip output-format directives from retrieval queries.
-    raw = re.sub(
-        r"\b(answer|respond|return)\s+with\s+(?:one|single|just|only)\s+(?:integer|number)(?:\s+only)?\b",
-        "",
-        raw,
-        flags=re.IGNORECASE,
-    )
-    raw = re.sub(r"\b(?:integer|number)\s+only\b", "", raw, flags=re.IGNORECASE)
-    raw = re.sub(r"\s+", " ", raw).strip(" .?")
-
-    # If the user already asked a question, keep as-is.
-    if raw.endswith("?"):
-        return raw
-
-    m_cap = re.match(
-        r"^\s*(?:the\s+)?capital\s+of\s+([a-zA-Z\s]+?)\s+is\s+([a-zA-Z\s\-]+)\s*[\.!]?\s*$",
-        raw,
-        re.IGNORECASE,
-    )
-    if m_cap:
-        country = re.sub(r"\s+", " ", m_cap.group(1)).strip()
-        return f"What is the capital of {country}?"
-
-    return f"{raw}?" if raw else ""
-
-
-STRICT_INTEGER_ONLY_PROMPT_PATTERN = re.compile(
-    r"\b(?:answer\s+with|return|respond\s+with)?\s*(?:one|single|just|only)\s+(?:integer|number)\s*(?:only)?\b"
-    r"|\binteger\s+only\b"
-    r"|\bnumber\s+only\b",
-    re.IGNORECASE,
-)
-
-NUMERIC_LITERAL_PATTERN = re.compile(
-    r"(?<![\dA-Za-z\.])\d{1,3}(?:,\d{3})*(?:\.\d+)?(?![\dA-Za-z\.])"
-)
-
-INTEGER_LITERAL_PATTERN = re.compile(
-    r"(?<![\dA-Za-z\.])\d{1,3}(?:,\d{3})*(?![\dA-Za-z\.])"
-)
-
-
-def _requires_integer_only_response(prompt: str) -> bool:
-    return bool(STRICT_INTEGER_ONLY_PROMPT_PATTERN.search(prompt or ""))
-
-
-def _normalize_numeric_literal(token: str) -> str:
-    return (token or "").replace(",", "").strip()
-
-
-def _extract_numeric_literals(text: str) -> List[str]:
-    return [_normalize_numeric_literal(t) for t in NUMERIC_LITERAL_PATTERN.findall(text or "")]
-
-
-def _extract_integer_literals(text: str) -> List[str]:
-    return [_normalize_numeric_literal(t) for t in INTEGER_LITERAL_PATTERN.findall(text or "")]
-
-
-def _canonical_integer_only_output(answer: str) -> Optional[str]:
-    ints = _extract_integer_literals(answer)
-    unique_ints: List[str] = []
-    for v in ints:
-        if v not in unique_ints:
-            unique_ints.append(v)
-    if len(unique_ints) == 1:
-        return unique_ints[0]
-    return None
-
-
 def classify_prompt_type(prompt: str) -> str:
-    """Classify prompt intent with emphasis on factual/research workflows."""
+    """Lightweight prompt routing for guard policy selection."""
     p = (prompt or "").lower()
-    if re.search(r"\b(study|research|paper|journal|citation|evidence|source|sources|literature review|meta-analysis)\b", p):
-        return "research"
-    if re.search(r"\bcapital\s+of\s+.+\s+is\s+.+\b", p):
-        return "factual"
-    if re.search(r"\b(debug|error|exception|traceback|stack trace|why does this code|fix this)\b", p):
-        return "troubleshooting"
-    if re.search(r"\b(how to|steps|procedure|guide|install|setup|configure)\b", p):
-        return "procedural"
-    if re.search(r"\b(compare|difference between|vs\.?|versus|pros and cons)\b", p):
-        return "comparison"
-    if re.search(r"\b(define|definition|what is|what are)\b", p):
-        return "definition"
-    if re.search(r"\b(why|cause|reason for|because)\b", p):
-        return "causal"
-    if re.search(r"\b(when|what year|what date|timeline|century)\b", p):
-        return "temporal"
     if re.search(r"\b(calculate|compute|multiply|multiplied|multiplication|times|product|add|subtract|divide|equation|solve)\b", p):
         return "math"
     if re.search(r"\b(function|class|python|javascript|code|algorithm|bug|compile|stack trace)\b", p):
         return "code"
-    if re.search(
-        r"\b(who|what|when|where|which|how many|capital|year|date|population|symbol|planet|moon|country|city|continent|president|prime minister|currency)\b",
-        p,
-    ):
+    if re.search(r"\b(who|what|when|where|how many|capital|year|date|population|symbol)\b", p):
         return "factual"
     return "open"
-
-
-FACTUAL_LIKE_TYPES = {"factual", "research", "temporal", "definition", "comparison", "causal"}
-RETRIEVAL_FRIENDLY_TYPES = FACTUAL_LIKE_TYPES.union({"procedural"})
-
-
-def is_factual_like(prompt_type: str) -> bool:
-    return prompt_type in FACTUAL_LIKE_TYPES
-
-
-def build_question_policy(prompt: str) -> Dict[str, Any]:
-    """Policy map controlling guard strictness and fallback behavior by prompt type."""
-    prompt_type = classify_prompt_type(prompt)
-
-    uncertainty_by_type = {
-        "factual": 0.50,
-        "research": 0.45,
-        "temporal": 0.45,
-        "definition": 0.55,
-        "comparison": 0.55,
-        "causal": 0.55,
-        "math": 0.45,
-        "code": 0.60,
-        "troubleshooting": 0.60,
-        "procedural": 0.60,
-        "open": 0.85,
-    }
-
-    return {
-        "prompt_type": prompt_type,
-        "uncertain_ratio_trigger": uncertainty_by_type.get(prompt_type, 0.60),
-        "allow_retrieval": prompt_type in RETRIEVAL_FRIENDLY_TYPES,
-        "prefer_verify_first": prompt_type in FACTUAL_LIKE_TYPES.union({"math", "code", "troubleshooting"}),
-        "strict_fact_gate": prompt_type in FACTUAL_LIKE_TYPES,
-    }
 
 
 def triangulated_factual_gate(prompt: str, answer: str) -> Dict[str, Any]:
@@ -1250,10 +1092,8 @@ def triangulated_factual_gate(prompt: str, answer: str) -> Dict[str, Any]:
     a = (answer or "").strip()
     a_lower = a.lower()
 
-    prompt_type = classify_prompt_type(prompt)
-    expects_factual = is_factual_like(prompt_type)
     expects_numeric = bool(MetacognitionPlugin.NUMERIC_QUESTION_PATTERN.search(p))
-    expects_ordinal = bool(re.search(r"\b(how many-th|which number|what number|nth)\b", p))
+    expects_ordinal = bool(re.search(r"\b(how many-th|which number|what number|nth|order from the sun)\b", p))
 
     has_cardinal = bool(MetacognitionPlugin.ANSWER_NUMBER_PATTERN.search(a))
     has_ordinal = bool(MetacognitionPlugin.ANSWER_ORDINAL_PATTERN.search(a))
@@ -1266,57 +1106,20 @@ def triangulated_factual_gate(prompt: str, answer: str) -> Dict[str, Any]:
 
     allow_ordinal_without_cardinal = expects_ordinal and has_ordinal and direct_form
     should_block_missing_numeric = expects_numeric and not has_numeric_signal and not allow_ordinal_without_cardinal
-    should_block_missing_factual_rank = False
-    numeric_literals = _extract_numeric_literals(a)
-    unique_numeric_literals: List[str] = []
-    for v in numeric_literals:
-        if v not in unique_numeric_literals:
-            unique_numeric_literals.append(v)
-    should_block_numeric_contradiction = expects_numeric and len(unique_numeric_literals) >= 2
-
-    strict_integer_only_request = _requires_integer_only_response(prompt)
-    canonical_integer_output = _canonical_integer_only_output(a)
-    should_block_integer_only_violation = strict_integer_only_request and canonical_integer_output is None
-
-    expects_claim_verification = bool(
-        re.match(
-            r"^\s*(?:the\s+)?capital\s+of\s+[a-zA-Z\s]+?\s+is\s+[a-zA-Z\s\-]+\s*[\.!]?\s*$",
-            prompt or "",
-            re.IGNORECASE,
-        )
-    )
-    should_block_claim_verification = expects_factual and expects_claim_verification
 
     reason = ""
     if should_block_missing_numeric:
         reason = "question expects numeric/ordinal answer but none was produced"
-    elif should_block_numeric_contradiction:
-        reason = "answer contains multiple conflicting numeric claims"
-    elif should_block_integer_only_violation:
-        reason = "prompt requested one integer-only answer but output was not a single integer"
-    elif should_block_claim_verification:
-        reason = "declarative factual claim requires external verification"
 
     return {
-        "prompt_type": prompt_type,
-        "expects_factual": expects_factual,
         "expects_numeric": expects_numeric,
         "expects_ordinal": expects_ordinal,
-        "expects_claim_verification": expects_claim_verification,
         "has_cardinal": has_cardinal,
         "has_ordinal": has_ordinal,
         "has_numeric_signal": has_numeric_signal,
-        "numeric_literals": numeric_literals,
-        "unique_numeric_literals": unique_numeric_literals,
         "direct_form": direct_form,
         "allow_ordinal_without_cardinal": allow_ordinal_without_cardinal,
-        "strict_integer_only_request": strict_integer_only_request,
-        "canonical_integer_output": canonical_integer_output,
         "should_block_missing_numeric": should_block_missing_numeric,
-        "should_block_missing_factual_rank": should_block_missing_factual_rank,
-        "should_block_numeric_contradiction": should_block_numeric_contradiction,
-        "should_block_integer_only_violation": should_block_integer_only_violation,
-        "should_block_claim_verification": should_block_claim_verification,
         "reason": reason,
     }
 
@@ -1344,12 +1147,12 @@ def verify_first_gate_decision(
     prompt_type = classify_prompt_type(prompt)
     has_numeric = bool(MetacognitionPlugin.ANSWER_NUMBER_PATTERN.search(draft_answer or ""))
 
-    # Keep factual numeric answers in the LLM-only flow.
-    # We avoid retrieval-only blocking to preserve fully local behavior.
-    if is_factual_like(prompt_type) and has_numeric:
+    # Factual numeric answers are usually better verified by retrieval than by a
+    # tiny verifier model that tends to judge explanation quality instead of answer adequacy.
+    if prompt_type == "factual" and has_numeric:
         return {
-            "blocked": False,
-            "reason": "factual numeric answer accepted in LLM-only mode",
+            "blocked": True,
+            "reason": "factual numeric answer — verify via retrieval",
             "prompt_type": prompt_type,
             "votes": {"yes": 0, "no": 0, "abstain": 0},
         }
@@ -1379,14 +1182,7 @@ def verify_first_gate_decision(
 
     for _ in range(max(1, votes)):
         short_prompt = prompt[:_SC_PROMPT_CHARS]
-        # For definition/factual prompts the model sometimes generates a trailing
-        # explanatory sentence that confuses the verifier.  Pass only the first
-        # sentence so the gate evaluates the direct answer, not decorative context.
-        if prompt_type in {"definition", "factual", "temporal"}:
-            first_sent = re.split(r"(?<=[.!?])\s", draft_answer[:_SC_DRAFT_CHARS])
-            short_draft = first_sent[0].strip() if first_sent else draft_answer[:_SC_DRAFT_CHARS]
-        else:
-            short_draft = draft_answer[:_SC_DRAFT_CHARS]
+        short_draft = draft_answer[:_SC_DRAFT_CHARS]
         selection_style = "EXTERNAL" if external_selection else "IN-CONTEXT"
         verify_prompt = (
             f"[{selection_style} VERIFY-FIRST] "
@@ -1433,322 +1229,6 @@ def verify_first_gate_decision(
         "reason": reason,
         "prompt_type": prompt_type,
         "votes": {"yes": yes_votes, "no": no_votes, "abstain": abstain_votes},
-    }
-
-
-def _format_user_prompt_for_model(
-    prompt: str,
-    tokenizer,
-    use_chat_template: bool = True,
-    system_msg: str = "You are a helpful assistant. Give concise, direct answers. Do not add hashtags or social media formatting unless explicitly asked.",
-) -> str:
-    if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
-        messages = [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": prompt},
-        ]
-        try:
-            return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        except Exception:
-            return prompt
-    return prompt
-
-
-def _generate_clean_text(
-    prompt: str,
-    model,
-    tokenizer,
-    max_tokens: int = 48,
-    use_chat_template: bool = True,
-) -> str:
-    formatted = _format_user_prompt_for_model(prompt, tokenizer, use_chat_template=use_chat_template)
-    inputs = tokenizer(formatted, return_tensors="pt").to(model.device, non_blocking=True)
-    input_len = inputs["input_ids"].shape[1]
-    with torch.inference_mode():
-        seq = model.generate(
-            **inputs,
-            max_new_tokens=max_tokens,
-            do_sample=False,
-            use_cache=True,
-        )
-    raw = tokenizer.decode(seq[0][input_len:], skip_special_tokens=True)
-    return _sanitize_answer_text(raw)
-
-
-def _sanitize_answer_text(text: str) -> str:
-    """Remove scaffold artifacts (memory tags/final-answer wrappers) from outputs."""
-    s = (text or "").strip()
-    if not s:
-        return ""
-
-    final_spans = re.findall(
-        r"(?is)\bfinal\s+answer\s*[:\-]\s*(.+?)(?=(?:\bfinal\s+answer\s*[:\-])|$)",
-        s,
-    )
-    if final_spans:
-        s = final_spans[-1].strip()
-
-    s = re.sub(r"(?is)\[/?MEMORY\]", " ", s)
-    s = re.sub(r"(?im)^\s*(?:answer|response|output)\s*[:\-]\s*", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    s = re.sub(r"\s*([,;:])\s*$", "", s).strip()
-    # Strip trailing hashtag chains (social-media formatting artifact, e.g. "#Topic #More")
-    s = re.sub(r"(\s*#\w+)+\s*$", "", s).strip()
-    return s
-
-
-def _score_answer_confidence(
-    prompt: str,
-    answer: str,
-    model,
-    tokenizer,
-    threshold: float,
-    use_chat_template: bool = True,
-) -> Tuple[float, float]:
-    """
-    Teacher-forced confidence for a fixed answer.
-    Returns (avg_token_confidence, low_confidence_token_ratio).
-    """
-    answer = _sanitize_answer_text(answer)
-    if not answer:
-        return 0.0, 1.0
-
-    formatted_prompt = _format_user_prompt_for_model(prompt, tokenizer, use_chat_template=use_chat_template)
-    prompt_ids = tokenizer(formatted_prompt, return_tensors="pt").to(model.device, non_blocking=True)["input_ids"]
-    answer_ids = tokenizer(answer, return_tensors="pt", add_special_tokens=False).to(model.device, non_blocking=True)["input_ids"]
-
-    if answer_ids.numel() == 0:
-        return 0.0, 1.0
-
-    full_ids = torch.cat([prompt_ids, answer_ids], dim=1)
-    prompt_len = prompt_ids.shape[1]
-
-    with torch.inference_mode():
-        logits = model(full_ids).logits
-
-    probs = torch.softmax(logits[:, :-1, :].float(), dim=-1)
-    target = full_ids[:, 1:]
-
-    start = max(prompt_len - 1, 0)
-    answer_probs = probs[:, start:, :]
-    answer_target = target[:, start:]
-    if answer_target.numel() == 0:
-        return 0.0, 1.0
-
-    token_p = answer_probs.gather(-1, answer_target.unsqueeze(-1)).squeeze(-1)
-    vals = token_p.flatten()
-    avg_conf = vals.mean().item() if vals.numel() else 0.0
-    low_ratio = (vals < threshold).float().mean().item() if vals.numel() else 1.0
-    return float(avg_conf), float(low_ratio)
-
-
-def internal_self_correct_answer(
-    prompt: str,
-    initial_answer: str,
-    model,
-    tokenizer,
-    threshold: float,
-    use_chat_template: bool = True,
-    max_rounds: int = 2,
-    target_uncertain_ratio: float = 0.45,
-    memory_max_tokens: int = 80,
-    enable_parametric_memory: bool = True,
-    min_conf_gain: float = 0.03,
-    verify_votes: int = 3,
-    verify_no_threshold: int = 2,
-    verify_high_conf_bypass: float = 0.90,
-    math_bypass_conf: float = 0.85,
-) -> Dict[str, Any]:
-    """
-    Internal-only self-correction controller:
-      1) stateless external selection verifier
-      2) optional parametric memory verbalization
-      3) bounded recursive refinement
-      4) never disables safe fallback path
-    """
-    best_answer = _sanitize_answer_text(initial_answer)
-    best_conf, best_uncertain = _score_answer_confidence(
-        prompt, best_answer, model, tokenizer, threshold, use_chat_template=use_chat_template
-    )
-    best_triad = triangulated_factual_gate(prompt, best_answer)
-    best_valid = not (
-        best_triad.get("should_block_missing_numeric")
-        or best_triad.get("should_block_missing_factual_rank")
-        or best_triad.get("should_block_numeric_contradiction")
-        or best_triad.get("should_block_integer_only_violation")
-    )
-
-    traces: List[Dict[str, Any]] = []
-    rounds = max(1, int(max_rounds))
-
-    for ridx in range(rounds):
-        if enable_parametric_memory:
-            memory_prompt = (
-                "You are doing internal factual recall only. "
-                "List concise, high-confidence facts relevant to this question as bullet points. "
-                "If unsure, state uncertainty explicitly.\n"
-                f"Question: {prompt}"
-            )
-            memory_block = _generate_clean_text(
-                memory_prompt,
-                model,
-                tokenizer,
-                max_tokens=max(24, int(memory_max_tokens)),
-                use_chat_template=use_chat_template,
-            )
-            revise_prompt = (
-                "Use ONLY the memory block below to answer the question directly. "
-                "Return a short final answer.\n"
-                f"[MEMORY]\n{memory_block}\n[/MEMORY]\n"
-                f"Question: {prompt}"
-            )
-        else:
-            revise_prompt = (
-                "Re-answer the question from internal knowledge only. "
-                "Be concise and fact-focused.\n"
-                f"Question: {prompt}"
-            )
-
-        candidate = _generate_clean_text(
-            revise_prompt,
-            model,
-            tokenizer,
-            max_tokens=48,
-            use_chat_template=use_chat_template,
-        )
-        candidate = _sanitize_answer_text(candidate)
-
-        cand_conf, cand_uncertain = _score_answer_confidence(
-            prompt, candidate, model, tokenizer, threshold, use_chat_template=use_chat_template
-        )
-        cand_triad = triangulated_factual_gate(prompt, candidate)
-        gate_meta = verify_first_gate_decision(
-            prompt=prompt,
-            draft_answer=candidate,
-            model=model,
-            tokenizer=tokenizer,
-            external_selection=True,
-            confidence=cand_conf,
-            votes=verify_votes,
-            no_votes_to_block=verify_no_threshold,
-            high_conf_bypass=verify_high_conf_bypass,
-            math_bypass_conf=math_bypass_conf,
-        )
-
-        cand_valid = not (
-            cand_triad.get("should_block_missing_numeric")
-            or cand_triad.get("should_block_missing_factual_rank")
-            or cand_triad.get("should_block_numeric_contradiction")
-            or cand_triad.get("should_block_integer_only_violation")
-            or gate_meta.get("blocked")
-        )
-
-        conf_gain = cand_conf - best_conf
-        should_take = (
-            (cand_valid and not best_valid)
-            or (cand_valid and conf_gain >= min_conf_gain)
-            or (cand_valid and cand_uncertain + 1e-9 < best_uncertain)
-        )
-
-        traces.append(
-            {
-                "round": ridx + 1,
-                "candidate": candidate,
-                "candidate_confidence": round(cand_conf, 6),
-                "candidate_uncertain_ratio": round(cand_uncertain, 6),
-                "candidate_valid": bool(cand_valid),
-                "verify_reason": gate_meta.get("reason", ""),
-            }
-        )
-
-        if should_take:
-            best_answer = candidate
-            best_conf = cand_conf
-            best_uncertain = cand_uncertain
-            best_triad = cand_triad
-            best_valid = cand_valid
-
-        if best_valid and best_uncertain <= target_uncertain_ratio:
-            break
-
-    return {
-        "applied": bool(best_answer and best_answer != (initial_answer or "").strip()),
-        "answer": best_answer,
-        "avg_confidence": best_conf,
-        "uncertain_ratio": best_uncertain,
-        "valid": best_valid,
-        "triad": best_triad,
-        "trace": traces,
-    }
-
-
-def probe_internal_integer_consensus(
-    prompt: str,
-    model,
-    tokenizer,
-    use_chat_template: bool = True,
-    attempts: int = 5,
-    max_tokens: int = 12,
-) -> Dict[str, Any]:
-    """
-    Generate multiple strict integer-only drafts and pick a majority integer.
-    This is purely internal (no external retrieval).
-    """
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return {
-            "consensus_integer": None,
-            "support": 0,
-            "total_integer_candidates": 0,
-            "attempts": 0,
-            "samples": [],
-        }
-
-    templates = [
-        "Answer with one integer only. No explanation.\nQuestion: {q}",
-        "Return only a single number.\nQuestion: {q}",
-        "Use your internal knowledge only. Output one integer token only.\nQuestion: {q}",
-        "Give the best current accepted count as one integer only.\nQuestion: {q}",
-        "Final answer format: <integer>.\nQuestion: {q}",
-    ]
-
-    n = max(1, int(attempts))
-    samples: List[str] = []
-    counts: Dict[str, int] = {}
-
-    for i in range(n):
-        t = templates[i % len(templates)]
-        candidate = _generate_clean_text(
-            t.format(q=prompt),
-            model,
-            tokenizer,
-            max_tokens=max(4, int(max_tokens)),
-            use_chat_template=use_chat_template,
-        )
-        samples.append(candidate)
-        canonical = _canonical_integer_only_output(candidate)
-        if canonical is None:
-            continue
-        counts[canonical] = counts.get(canonical, 0) + 1
-
-    if not counts:
-        return {
-            "consensus_integer": None,
-            "support": 0,
-            "total_integer_candidates": 0,
-            "attempts": n,
-            "samples": samples,
-        }
-
-    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
-    best_int, support = ranked[0]
-    total = sum(counts.values())
-    return {
-        "consensus_integer": best_int,
-        "support": int(support),
-        "total_integer_candidates": int(total),
-        "attempts": n,
-        "samples": samples,
     }
 
 
@@ -2131,12 +1611,6 @@ def generate_with_meta(
     verify_no_threshold: int = 2,
     verify_high_conf_bypass: float = 0.90,
     math_bypass_conf: float = 0.85,
-    factual_uncertain_ratio_trigger: float = 0.50,
-    enable_internal_self_correct: bool = False,
-    internal_max_rounds: int = 2,
-    internal_target_uncertain_ratio: float = 0.45,
-    internal_memory_max_tokens: int = 80,
-    internal_enable_parametric_memory: bool = True,
 ) -> Tuple[torch.Tensor, "MetacognitionPlugin"]:
     """
     Convenience generation function with per-token metacognition scoring.
@@ -2228,66 +1702,15 @@ def generate_with_meta(
         if tokenizer.convert_tokens_to_ids(a["token"]) not in eos_ids
            and a["token"] not in tokenizer.all_special_tokens
     ).strip()
-    clean_out = _sanitize_answer_text(clean_out)
     flagged_numerics = [a for a in plugin._annotations if a.get("numeric_flagged")]
 
-    triad = triangulated_factual_gate(prompt, clean_out)
-    policy = build_question_policy(prompt)
-    prompt_type = policy["prompt_type"]
-    if is_factual_like(prompt_type):
-        ratio_threshold = min(policy["uncertain_ratio_trigger"], factual_uncertain_ratio_trigger)
-    else:
-        ratio_threshold = policy["uncertain_ratio_trigger"]
-    block, reason = plugin.requires_safe_fallback(prompt, clean_out, ratio_threshold=ratio_threshold)
+    block, reason = plugin.requires_safe_fallback(prompt, clean_out)
     plugin.safe_output = clean_out
     plugin.safe_mode = "direct"
     avg_confidence = (
         sum(a.get("confidence", 0.0) for a in plugin._annotations) / max(len(plugin._annotations), 1)
         if plugin._annotations else 0.0
     )
-
-    if enable_internal_self_correct and block and clean_out:
-        correction = internal_self_correct_answer(
-            prompt=prompt,
-            initial_answer=clean_out,
-            model=model,
-            tokenizer=tokenizer,
-            threshold=threshold,
-            use_chat_template=use_chat_template,
-            max_rounds=internal_max_rounds,
-            target_uncertain_ratio=internal_target_uncertain_ratio,
-            memory_max_tokens=internal_memory_max_tokens,
-            enable_parametric_memory=internal_enable_parametric_memory,
-            verify_votes=verify_votes,
-            verify_no_threshold=verify_no_threshold,
-            verify_high_conf_bypass=verify_high_conf_bypass,
-            math_bypass_conf=math_bypass_conf,
-        )
-        corrected = _sanitize_answer_text(correction.get("answer") or "")
-        corrected_triad = correction.get("triad") or triangulated_factual_gate(prompt, corrected)
-        corrected_uncertain = float(correction.get("uncertain_ratio", 1.0))
-        corrected_block = (
-            corrected_uncertain >= ratio_threshold
-            or corrected_triad.get("should_block_missing_numeric")
-            or corrected_triad.get("should_block_missing_factual_rank")
-            or corrected_triad.get("should_block_numeric_contradiction")
-            or corrected_triad.get("should_block_integer_only_violation")
-            or corrected_triad.get("should_block_claim_verification")
-        )
-        if correction.get("applied"):
-            print(
-                "  [INTERNAL] "
-                f"rounds={len(correction.get('trace', []))} "
-                f"uncertain={corrected_uncertain:.2%}"
-            )
-        if correction.get("applied") and not corrected_block:
-            clean_out = corrected
-            triad = corrected_triad
-            avg_confidence = float(correction.get("avg_confidence", avg_confidence))
-            block = False
-            reason = ""
-            plugin.safe_output = clean_out
-            plugin.safe_mode = "direct_internal"
 
     if block:
         # Verify-first gate to reduce error introduction before any correction action.
@@ -2306,7 +1729,7 @@ def generate_with_meta(
             )
             if gate_meta.get("blocked"):
                 reason = f"verify-first gate blocked: {gate_meta.get('reason', 'no reason')}"
-        if enable_retrieval_fallback and policy.get("allow_retrieval", False):
+        if enable_retrieval_fallback:
             ok, retrieved = retrieve_wikipedia_summary(prompt)
             if ok:
                 plugin.safe_output = f"[Retrieved] {retrieved}"
@@ -2317,9 +1740,6 @@ def generate_with_meta(
         else:
             plugin.safe_output = plugin.safe_fallback_message(reason)
             plugin.safe_mode = "fallback"
-    elif triad.get("strict_integer_only_request") and triad.get("canonical_integer_output"):
-        plugin.safe_output = str(triad.get("canonical_integer_output"))
-        plugin.safe_mode = "direct_strict"
 
     print(f"  Output : {plugin.annotated_text(show_entropy=False)}")
     print(f"  Entropy: {plugin.annotated_text(show_entropy=True)}")
@@ -2330,10 +1750,6 @@ def generate_with_meta(
             print(f"  [SAFE] Retrieval fallback: {plugin.safe_output}")
         else:
             print(f"  [SAFE] Fallback: {plugin.safe_output}")
-    elif plugin.safe_mode == "direct_internal":
-        print(f"  [SAFE] Internal self-correct accepted: {plugin.safe_output}")
-    elif plugin.safe_mode == "direct_strict":
-        print(f"  [SAFE] Enforced integer-only output: {plugin.safe_output}")
     if flagged_numerics:
         toks = ', '.join(f"'{a['token'].strip()}'" for a in flagged_numerics)
         print(f"  ⚠ Numeric token(s) flagged for external verification: {toks}")
@@ -2360,12 +1776,6 @@ def generate_with_post_guard(
     verify_no_threshold: int = 2,
     verify_high_conf_bypass: float = 0.90,
     math_bypass_conf: float = 0.85,
-    factual_uncertain_ratio_trigger: float = 0.50,
-    enable_internal_self_correct: bool = False,
-    internal_max_rounds: int = 2,
-    internal_target_uncertain_ratio: float = 0.45,
-    internal_memory_max_tokens: int = 80,
-    internal_enable_parametric_memory: bool = True,
 ) -> dict:
     """
     Faster generation path: run one standard generation pass, then apply safety checks.
@@ -2415,7 +1825,7 @@ def generate_with_post_guard(
             logits_processor=LogitsProcessorList([tracker]),
         )
 
-    clean_out = _sanitize_answer_text(tokenizer.decode(seq[0][input_len:], skip_special_tokens=True))
+    clean_out = tokenizer.decode(seq[0][input_len:], skip_special_tokens=True).strip()
 
     # Confidence proxy from generation scores: top-token probability per decode step.
     top_probs: List[float] = tracker.top_probs
@@ -2426,90 +1836,7 @@ def generate_with_post_guard(
         if top_probs else 0.0
     )
 
-    consensus_meta: Dict[str, Any] = {}
-    strong_internal_consensus = False
-
-    if enable_internal_self_correct and clean_out:
-        correction = internal_self_correct_answer(
-            prompt=prompt,
-            initial_answer=clean_out,
-            model=model,
-            tokenizer=tokenizer,
-            threshold=threshold,
-            use_chat_template=use_chat_template,
-            max_rounds=internal_max_rounds,
-            target_uncertain_ratio=internal_target_uncertain_ratio,
-            memory_max_tokens=internal_memory_max_tokens,
-            enable_parametric_memory=internal_enable_parametric_memory,
-            verify_votes=verify_votes,
-            verify_no_threshold=verify_no_threshold,
-            verify_high_conf_bypass=verify_high_conf_bypass,
-            math_bypass_conf=math_bypass_conf,
-        )
-        if correction.get("applied"):
-            clean_out = _sanitize_answer_text(str(correction.get("answer", clean_out)))
-            avg_conf = float(correction.get("avg_confidence", avg_conf))
-            uncertain_ratio = float(correction.get("uncertain_ratio", uncertain_ratio))
-            print(
-                "  [INTERNAL] "
-                f"rounds={len(correction.get('trace', []))} "
-                f"conf={avg_conf:.2%} uncertain={uncertain_ratio:.2%}"
-            )
-
     triad = triangulated_factual_gate(prompt, clean_out)
-    policy = build_question_policy(prompt)
-    prompt_type = policy["prompt_type"]
-
-    # For strict numeric factual prompts, run an internal integer consensus probe
-    # before falling back due uncertainty.
-    if (
-        enable_internal_self_correct
-        and triad.get("strict_integer_only_request")
-        and is_factual_like(prompt_type)
-    ):
-        consensus_meta = probe_internal_integer_consensus(
-            prompt=prompt,
-            model=model,
-            tokenizer=tokenizer,
-            use_chat_template=use_chat_template,
-            attempts=5,
-            max_tokens=10,
-        )
-        c_int = consensus_meta.get("consensus_integer")
-        c_support = int(consensus_meta.get("support", 0))
-        c_total = int(consensus_meta.get("total_integer_candidates", 0))
-        if c_int and c_total > 0:
-            support_ratio = c_support / max(c_total, 1)
-            if c_support >= 2 and support_ratio >= 0.60:
-                clean_out = str(c_int)
-                triad = triangulated_factual_gate(prompt, clean_out)
-                avg_conf, uncertain_ratio = _score_answer_confidence(
-                    prompt,
-                    clean_out,
-                    model,
-                    tokenizer,
-                    threshold,
-                    use_chat_template=use_chat_template,
-                )
-                # Trust 100% integer consensus regardless of raw confidence score,
-                # since single-token answers like "4" score low due to teacher-forcing.
-                strong_internal_consensus = (support_ratio >= 1.0 or (avg_conf >= 0.20 and uncertain_ratio <= 0.85))
-                print(
-                    "  [INTERNAL] integer consensus "
-                    f"{clean_out} (support={c_support}/{c_total}, ratio={support_ratio:.0%})"
-                )
-
-    if is_factual_like(prompt_type):
-        applied_uncertain_ratio_trigger = min(
-            uncertain_ratio_trigger,
-            factual_uncertain_ratio_trigger,
-            policy["uncertain_ratio_trigger"],
-        )
-    else:
-        applied_uncertain_ratio_trigger = min(
-            uncertain_ratio_trigger,
-            policy["uncertain_ratio_trigger"],
-        )
 
     block = False
     reason = ""
@@ -2532,29 +1859,17 @@ def generate_with_post_guard(
             block = True
             reason = f"verify-first gate blocked: {gate_meta.get('reason', 'no reason') }"
 
-    if uncertain_ratio >= applied_uncertain_ratio_trigger and not strong_internal_consensus:
+    if uncertain_ratio >= uncertain_ratio_trigger:
         block = True
         reason = f"high uncertainty ({uncertain_ratio*100:.0f}% low-confidence decode steps)"
     elif triad.get("should_block_missing_numeric"):
         block = True
         reason = triad.get("reason", "question expects numeric answer but none was produced")
-    elif triad.get("should_block_missing_factual_rank"):
-        block = True
-        reason = triad.get("reason", "question expects factual rank/order signal but none was produced")
-    elif triad.get("should_block_numeric_contradiction"):
-        block = True
-        reason = triad.get("reason", "answer contains multiple conflicting numeric claims")
-    elif triad.get("should_block_integer_only_violation"):
-        block = True
-        reason = triad.get("reason", "prompt requested one integer-only answer but output was not a single integer")
-    elif triad.get("should_block_claim_verification"):
-        block = True
-        reason = triad.get("reason", "declarative factual claim requires external verification")
 
     safe_mode = "direct"
     safe_output = clean_out
     if block:
-        if enable_retrieval_fallback and policy.get("allow_retrieval", False):
+        if enable_retrieval_fallback:
             ok, retrieved = retrieve_wikipedia_summary(prompt)
             if ok:
                 safe_mode = "retrieved"
@@ -2565,18 +1880,15 @@ def generate_with_post_guard(
         else:
             safe_mode = "fallback"
             safe_output = MetacognitionPlugin.safe_fallback_message(reason)
-    elif triad.get("strict_integer_only_request") and triad.get("canonical_integer_output"):
-        safe_mode = "direct_strict"
-        safe_output = str(triad.get("canonical_integer_output"))
 
     print(f"\n  Prompt : {prompt}")
     print(f"  Clean  : {clean_out}")
     print(f"  [POST] avg confidence={avg_conf:.2%} | uncertain ratio={uncertain_ratio:.2%}")
-    if triad.get("expects_numeric") or triad.get("expects_claim_verification"):
+    if triad.get("expects_numeric"):
         print(
             "  [TFG] "
             f"cardinal={triad.get('has_cardinal')} ordinal={triad.get('has_ordinal')} "
-            f"direct={triad.get('direct_form')} claim={triad.get('expects_claim_verification')}"
+            f"direct={triad.get('direct_form')}"
         )
     if block:
         print(f"  [SAFE] Blocking answer → {reason}")
@@ -2584,10 +1896,6 @@ def generate_with_post_guard(
             print(f"  [SAFE] Retrieval fallback: {safe_output}")
         else:
             print(f"  [SAFE] Fallback: {safe_output}")
-    elif safe_mode == "direct_strict":
-        print(f"  [SAFE] Enforced integer-only output: {safe_output}")
-    elif strong_internal_consensus:
-        print(f"  [SAFE] Internal consensus accepted: {safe_output}")
     if verify_first and gate_meta:
         votes = gate_meta.get("votes", {})
         print(
@@ -2614,7 +1922,7 @@ def quick_generate_answer(prompt: str, model, tokenizer, max_tokens: int = 40) -
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device, non_blocking=True)
     with torch.inference_mode():
         out = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
-    return _sanitize_answer_text(tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True))
+    return tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
 
 
 def run_cybernetic_calibration(
@@ -2666,7 +1974,7 @@ def run_cybernetic_calibration(
                     model=model,
                     tokenizer=tokenizer,
                     max_tokens=max_tokens,
-                    enable_retrieval_fallback=False,
+                    enable_retrieval_fallback=True,
                     verify_first=verify_first,
                     external_selection=external_selection,
                     verify_votes=verify_votes,
@@ -2679,13 +1987,21 @@ def run_cybernetic_calibration(
                 any_blocked = bool(corrected_obj.get("blocked"))
                 if gate_blocked:
                     verify_blocks += 1
-                if preserve_on_verify_block and any_blocked:
+                factual_retrieved = prompt_type == "factual" and corrected_obj.get("safe_mode") == "retrieved"
+                if factual_retrieved:
+                    corrected = corrected_obj["safe_output"]
+                elif preserve_on_verify_block and any_blocked:
                     # Calibration mode: preserve original answer on any block so we can
                     # measure guard signal quality without fallback-induced C->I artifacts.
                     corrected = initial
                     preserved_blocks += 1
                 else:
-                    corrected = initial
+                    # Only accept explicit retrieval correction in calibration mode.
+                    # This avoids C->I artifacts from a second free-generation pass.
+                    if corrected_obj.get("safe_mode") == "retrieved":
+                        corrected = corrected_obj["safe_output"]
+                    else:
+                        corrected = initial
 
         corrected_ok = answer_matches_reference(corrected, gold, validator=validator, options=options)
         monitor.update(initial_ok, corrected_ok)
@@ -2854,340 +2170,642 @@ def verify_with_reasoning(
     return passed, explanation
 
 
-def _extract_core_terms(text: str) -> List[str]:
-    """Extract lightweight lexical terms for retrieval scoring."""
-    stop = {
-        "the", "a", "an", "is", "are", "was", "were", "in", "on", "at", "to", "of", "for", "and",
-        "or", "by", "with", "from", "what", "which", "who", "when", "where", "how", "many", "does",
-        "do", "did", "have", "has", "had", "it", "this", "that", "be", "as", "solar", "system",
-    }
-    terms = re.findall(r"[a-zA-Z0-9]+", (text or "").lower())
-    return [t for t in terms if len(t) > 2 and t not in stop]
-
-
-def _build_retrieval_queries(prompt: str) -> List[str]:
-    """Compile a small query lattice from prompt intent and entities."""
-    normalized = _rewrite_factual_claim_to_query(prompt)
-    p = normalized.strip().rstrip("?")
-    p_lower = p.lower()
-    prompt_type = classify_prompt_type(p)
-    queries: List[str] = [p]
-
-    proper_nouns = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", p)
-    subject_hint = ""
-
-    m_def = re.search(r"\b(?:what is|who is|define)\s+(.+)$", p, re.IGNORECASE)
-    if m_def:
-        subject_hint = m_def.group(1).strip(" .")
-
-    m_capital_q = re.search(r"\bcapital\s+of\s+([a-zA-Z\s]+)\b", p, re.IGNORECASE)
-    if m_capital_q:
-        country = m_capital_q.group(1).strip(" .")
-        queries.extend([
-            f"capital of {country}",
-            f"{country} capital city",
-            f"{country} country overview",
-        ])
-
-    m_between = re.search(r"\bdifference between\s+(.+?)\s+and\s+(.+)$", p, re.IGNORECASE)
-    if m_between:
-        left = m_between.group(1).strip(" .")
-        right = m_between.group(2).strip(" .")
-        queries.extend([f"{left} vs {right}", f"difference between {left} and {right}"])
-
-    m_vs = re.search(r"\b(.+?)\s+vs\.?\s+(.+)$", p, re.IGNORECASE)
-    if m_vs:
-        left = m_vs.group(1).strip(" .")
-        right = m_vs.group(2).strip(" .")
-        queries.extend([f"{left} vs {right}", f"{left} compared to {right}"])
-
-    if subject_hint:
-        queries.extend([subject_hint, f"{subject_hint} overview"])
-    elif proper_nouns:
-        queries.extend(proper_nouns[:2])
-
-    if prompt_type == "temporal":
-        if subject_hint:
-            queries.extend([f"{subject_hint} date", f"{subject_hint} year"])
-        queries.append(f"{p} year")
-
-    if prompt_type == "causal":
-        if subject_hint:
-            queries.extend([f"{subject_hint} cause", f"why {subject_hint}"])
-        queries.append(f"{p} explanation")
-
-    if prompt_type == "procedural":
-        queries.append(f"{p} steps")
-        queries.append(f"{p} guide")
-
-    if prompt_type == "definition":
-        if subject_hint:
-            queries.append(f"{subject_hint} definition")
-            queries.append(f"{subject_hint} meaning")
-
-    if prompt_type == "research":
-        m_about = re.search(r"\b(?:about|on)\s+([a-zA-Z\s]+?)\s+and\s+([a-zA-Z\s]+)$", p, re.IGNORECASE)
-        if m_about:
-            left = m_about.group(1).strip(" .")
-            right = m_about.group(2).strip(" .")
-            queries.extend([
-                f"{left} and {right}",
-                f"{left} {right} relationship",
-                f"effects of {left} on {right}",
-                f"{left} {right} review",
-            ])
-        if subject_hint:
-            queries.extend([
-                f"{subject_hint} review",
-                f"{subject_hint} evidence",
-                f"{subject_hint} research",
-            ])
-        queries.extend([f"{p} evidence", f"{p} source"])
-
-    # Preserve order while removing duplicates/empties.
-    seen = set()
-    deduped: List[str] = []
-    for q in queries:
-        clean = q.strip()
-        if clean and clean not in seen:
-            seen.add(clean)
-            deduped.append(clean)
-    return deduped[:8]
-
-
-def _wiki_search_titles(query: str, headers: Dict[str, str], timeout_sec: int, limit: int = 3) -> List[str]:
-    """Return candidate Wikipedia titles for a query."""
-    params = parse.urlencode(
-        {
-            "action": "query",
-            "list": "search",
-            "format": "json",
-            "srlimit": limit,
-            "srsearch": query,
-        }
-    )
-    search_url = f"https://en.wikipedia.org/w/api.php?{params}"
-    req = request.Request(search_url, headers=headers)
-    with request.urlopen(req, timeout=timeout_sec) as resp:
-        data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-    results = data.get("query", {}).get("search", [])
-    return [r.get("title", "").strip() for r in results if r.get("title")]
-
-
-def _wiki_fetch_summary(title: str, headers: Dict[str, str], timeout_sec: int) -> str:
-    """Fetch extract text for a Wikipedia page title."""
-    summary_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" f"{parse.quote(title)}"
-    req = request.Request(summary_url, headers=headers)
-    with request.urlopen(req, timeout=timeout_sec) as resp:
-        data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-    return (data.get("extract") or "").strip()
-
-
-def _score_candidate_summary(prompt: str, title: str, extract: str) -> float:
-    """Heuristic ranking score for retrieval candidate quality."""
-    p_terms = set(_extract_core_terms(prompt))
-    text = f"{title} {extract}".lower()
-    overlap = sum(1 for t in p_terms if t in text)
-    score = float(overlap)
-
-    p_lower = (prompt or "").lower()
-    prompt_type = classify_prompt_type(prompt)
-    m_capital_prompt = re.search(r"\bcapital\s+of\s+([a-zA-Z\s]+)\b", prompt or "", re.IGNORECASE)
-    if m_capital_prompt:
-        country = m_capital_prompt.group(1).strip().lower()
-        if re.search(rf"\bcapital(?:\s+and\s+[^,\.]+)?\s+of\s+{re.escape(country)}\b", text):
-            score += 4.0
-        if re.search(rf"\b[A-Za-z\-]+\s+is\s+(?:the\s+)?capital(?:\s+and\s+[^,\.]+)?\s+of\s+{re.escape(country)}\b", text):
-            score += 3.0
-        if title.strip().lower() == country:
-            score -= 1.0
-
-    if prompt_type == "temporal":
-        if re.search(r"\b\d{4}\b", text):
-            score += 2.0
-        if re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b", text):
-            score += 1.0
-
-    if prompt_type == "definition":
-        if re.search(r"\b(is a|is an|refers to|defined as)\b", text):
-            score += 1.5
-
-    if prompt_type == "comparison":
-        if re.search(r"\b(difference|compared|whereas|while|both|unlike)\b", text):
-            score += 1.5
-
-    if prompt_type == "causal":
-        if re.search(r"\b(because|due to|caused by|results from|reason)\b", text):
-            score += 1.5
-
-    if prompt_type == "procedural":
-        if re.search(r"\b(step|process|method|procedure|first|second|then)\b", text):
-            score += 1.5
-
-    if prompt_type == "research":
-        if re.search(r"\b(study|studies|research|evidence|according to|analysis|review|trial|paper)\b", text):
-            score += 2.0
-        if re.search(r"\b\d{4}\b", text):
-            score += 0.8
-        m_about = re.search(r"\b(?:about|on)\s+([a-zA-Z\s]+?)\s+and\s+([a-zA-Z\s]+)$", prompt or "", re.IGNORECASE)
-        if m_about:
-            left_terms = _extract_core_terms(m_about.group(1))
-            right_terms = _extract_core_terms(m_about.group(2))
-            has_left = any(t in text for t in left_terms)
-            has_right = any(t in text for t in right_terms)
-            if has_left and has_right:
-                score += 2.5
-            elif has_left or has_right:
-                score -= 1.0
-
-    return score
-
-
-def _extract_targeted_fact(prompt: str, extract: str) -> str:
-    """Extract a direct answer sentence for known factual prompt shapes."""
-    rewritten_prompt = _rewrite_factual_claim_to_query(prompt)
-    p_lower = rewritten_prompt.lower()
-    prompt_type = classify_prompt_type(prompt)
-    summary = (extract or "").replace("\n", " ").strip()
-    if not summary:
-        return ""
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", summary) if s.strip()]
-
-    m_capital_prompt = re.search(r"\bcapital\s+of\s+([a-zA-Z\s]+)\b", rewritten_prompt, re.IGNORECASE)
-    if m_capital_prompt:
-        country = m_capital_prompt.group(1).strip(" .")
-        country_title = " ".join(w.capitalize() for w in country.split())
-        country_l = country.lower()
-        m_capital_has_been = re.search(
-            rf"\bcapital\s+of\s+{re.escape(country_l)}\s+(?:has\s+been|is)\s+([A-Z][A-Za-z\-]+(?:\s+[A-Z][A-Za-z\-]+)*)\b",
-            summary,
-            re.IGNORECASE,
-        )
-        if m_capital_has_been:
-            city = m_capital_has_been.group(1).strip(" .")
-            return f"The capital of {country_title} is {city}."
-
-        m_city_subject = re.search(
-            rf"\b([A-Z][A-Za-z\-]+(?:\s+[A-Z][A-Za-z\-]+)*)\s+is\s+(?:the\s+)?capital(?:\s+and\s+[^,\.]+)?\s+of\s+{re.escape(country_l)}\b",
-            summary,
-            re.IGNORECASE,
-        )
-        if m_city_subject:
-            city = m_city_subject.group(1).strip(" .")
-            return f"The capital of {country_title} is {city}."
-
-        m_capital = re.search(
-            r"\bcapital(?:\s+and\s+largest\s+city)?\s+(?:is\s+)?([A-Z][A-Za-z\-]+(?:\s+[A-Z][A-Za-z\-]+)*)",
-            summary,
-            re.IGNORECASE,
-        )
-        if m_capital:
-            city = m_capital.group(1).strip(" .")
-            if not city.lower().startswith("of "):
-                return f"The capital of {country_title} is {city}."
-
-    if prompt_type == "temporal":
-        for s in sentences[:4]:
-            if re.search(r"\b\d{4}\b", s):
-                return s
-
-    if prompt_type == "definition":
-        if sentences:
-            return sentences[0]
-
-    if prompt_type == "comparison":
-        if len(sentences) >= 2:
-            return f"{sentences[0]} {sentences[1]}"
-        if sentences:
-            return sentences[0]
-
-    if prompt_type == "procedural":
-        return " ".join(sentences[:2]) if sentences else summary[:220]
-
-    if prompt_type == "causal":
-        for s in sentences[:4]:
-            if re.search(r"\b(because|due to|caused by|results from)\b", s, re.IGNORECASE):
-                return s
-
-    if prompt_type == "research":
-        selected = []
-        for s in sentences[:5]:
-            if re.search(r"\b(study|research|evidence|analysis|review|trial|paper)\b", s, re.IGNORECASE):
-                selected.append(s)
-            if len(selected) == 2:
-                break
-        if selected:
-            return " ".join(selected)
-
-    first_sentence = sentences[0] if sentences else ""
-    return first_sentence if first_sentence else summary[:220]
-
-
 def retrieve_wikipedia_summary(prompt: str, timeout_sec: int = 6) -> Tuple[bool, str]:
     """
     Lightweight factual retrieval fallback using Wikipedia search + page summary.
     Returns (success, text).
     """
-    normalized_prompt = _rewrite_factual_claim_to_query((prompt or "").strip())
-    if not normalized_prompt:
+    query = prompt.strip().rstrip("?")
+    if not query:
         return False, ""
-    if normalized_prompt in _RETRIEVAL_CACHE:
-        return True, _RETRIEVAL_CACHE[normalized_prompt]
+
+    search_params = parse.urlencode({
+        "action": "query",
+        "list": "search",
+        "format": "json",
+        "srlimit": 1,
+        "srsearch": query,
+    })
+    search_url = f"https://en.wikipedia.org/w/api.php?{search_params}"
     headers = {"User-Agent": "HydrusOpt/1.0 (local safety fallback)"}
 
-    queries = _build_retrieval_queries(normalized_prompt)
-    titles: List[str] = []
-    seen_titles = set()
-    for q in queries:
+    try:
+        search_req = request.Request(search_url, headers=headers)
+        with request.urlopen(search_req, timeout=timeout_sec) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+        results = data.get("query", {}).get("search", [])
+        if not results:
+            return False, ""
+
+        title = results[0].get("title", "").strip()
+        if not title:
+            return False, ""
+
+        summary_url = (
+            "https://en.wikipedia.org/api/rest_v1/page/summary/"
+            f"{parse.quote(title)}"
+        )
+        summary_req = request.Request(summary_url, headers=headers)
+        with request.urlopen(summary_req, timeout=timeout_sec) as resp:
+            summary_data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+        extract = (summary_data.get("extract") or "").strip()
+        if not extract:
+            return False, ""
+
+        # Keep fallback concise.
+        return True, extract[:400]
+    except (URLError, HTTPError, TimeoutError, json.JSONDecodeError):
+        return False, ""
+
+
+# ═══════════════════════════════════════════════════════════════
+# RESEARCH MODE  — multi-source retrieval + metacognition eval
+# ═══════════════════════════════════════════════════════════════
+#
+# Sources (all free, no API key required):
+#   • arXiv          — science, CS, math, physics, biology
+#   • PubMed/NCBI    — biomedical and clinical research
+#   • Semantic Scholar — cross-domain academic papers
+#
+# Flow:
+#   1. Fetch top-N snippets from each enabled source in parallel
+#   2. Rank by relevance (title/abstract keyword overlap)
+#   3. Inject ranked context into the model prompt
+#   4. Generate answer grounded to sources (generate_with_post_guard)
+#   5. Run a lightweight eval pass: ask the model "Is this claim
+#      supported by the sources?" — confidence below threshold
+#      flags the answer as unverified
+# ───────────────────────────────────────────────────────────────
+
+import xml.etree.ElementTree as _ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+_RESEARCH_UA = "HydrusOpt/1.0 (research-mode; contact: local)"
+_RESEARCH_TIMEOUT = 8   # seconds per HTTP call
+
+
+def _http_get_json(url: str, headers: Optional[Dict] = None) -> Optional[Dict]:
+    h = {"User-Agent": _RESEARCH_UA}
+    if headers:
+        h.update(headers)
+    try:
+        req = request.Request(url, headers=h)
+        with request.urlopen(req, timeout=_RESEARCH_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return None
+
+
+def _http_get_text(url: str) -> Optional[str]:
+    try:
+        req = request.Request(url, headers={"User-Agent": _RESEARCH_UA})
+        with request.urlopen(req, timeout=_RESEARCH_TIMEOUT) as resp:
+            return resp.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+
+# ── Query normaliser ──────────────────────────────────────────
+_QUERY_STRIP = {
+    "how", "what", "why", "when", "where", "who", "which", "does", "do",
+    "is", "are", "was", "were", "can", "could", "should", "would", "will",
+    "the", "a", "an", "to", "for", "of", "in", "on", "at", "by", "with",
+    "and", "or", "but", "more", "most", "best", "good", "some", "any",
+    "i", "me", "my", "you", "your", "we", "us", "it", "its",
+}
+
+def _normalize_query(query: str) -> str:
+    """
+    Extract meaningful keywords from a conversational query.
+    Strips question words, stop words, and short tokens so APIs receive
+    clean keyword terms rather than full sentences.
+    """
+    # Remove punctuation except hyphens, lower-case
+    cleaned = re.sub(r"[^\w\s\-]", " ", query.lower())
+    tokens = [t for t in cleaned.split() if len(t) > 2 and t not in _QUERY_STRIP]
+    return " ".join(tokens) if tokens else query.lower()
+
+
+# ── arXiv (Atom feed, stdlib xml) ─────────────────────────────
+def _fetch_arxiv(query: str, max_results: int = 3) -> List[Dict[str, str]]:
+    params = parse.urlencode({
+        "search_query": f"all:{query}",
+        "max_results": max_results,
+        "sortBy": "relevance",
+        "sortOrder": "descending",
+    })
+    url = f"http://export.arxiv.org/api/query?{params}"
+    raw = _http_get_text(url)
+    if not raw:
+        return []
+    results = []
+    try:
+        ns = {"a": "http://www.w3.org/2005/Atom"}
+        root = _ET.fromstring(raw)
+        for entry in root.findall("a:entry", ns):
+            title = (entry.findtext("a:title", "", ns) or "").strip().replace("\n", " ")
+            summary = (entry.findtext("a:summary", "", ns) or "").strip().replace("\n", " ")
+            link_el = entry.find("a:id", ns)
+            link = (link_el.text or "").strip() if link_el is not None else ""
+            if title and summary:
+                results.append({
+                    "source": "arXiv",
+                    "title": title,
+                    "snippet": summary[:350],
+                    "url": link,
+                })
+    except Exception:
+        pass
+    return results
+
+
+# ── PubMed / NCBI E-utilities ─────────────────────────────────
+def _fetch_pubmed(query: str, max_results: int = 3) -> List[Dict[str, str]]:
+    search_params = parse.urlencode({
+        "db": "pubmed",
+        "retmode": "json",
+        "retmax": max_results,
+        "term": query,
+    })
+    search_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?{search_params}"
+    data = _http_get_json(search_url)
+    if not data:
+        return []
+    ids = data.get("esearchresult", {}).get("idlist", [])
+    if not ids:
+        return []
+    # Fetch summaries for returned IDs
+    fetch_params = parse.urlencode({
+        "db": "pubmed",
+        "retmode": "json",
+        "rettype": "abstract",
+        "id": ",".join(ids[:max_results]),
+    })
+    fetch_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?{fetch_params}"
+    summary_data = _http_get_json(fetch_url)
+    if not summary_data:
+        return []
+    results = []
+    uids = summary_data.get("result", {}).get("uids", [])
+    for uid in uids:
+        rec = summary_data["result"].get(uid, {})
+        title = rec.get("title", "").strip()
+        source_journal = rec.get("source", "")
+        pub_date = rec.get("pubdate", "")
+        if title:
+            results.append({
+                "source": "PubMed",
+                "title": title,
+                "snippet": f"{source_journal} ({pub_date})" if source_journal else pub_date,
+                "url": f"https://pubmed.ncbi.nlm.nih.gov/{uid}/",
+            })
+    return results
+
+
+# ── Semantic Scholar ──────────────────────────────────────────
+def _fetch_semantic_scholar(query: str, max_results: int = 3) -> List[Dict[str, str]]:
+    params = parse.urlencode({
+        "query": query,
+        "limit": max_results,
+        "fields": "title,abstract,year,authors",
+    })
+    url = f"https://api.semanticscholar.org/graph/v1/paper/search?{params}"
+    data = _http_get_json(url, headers={"x-api-key": ""})  # public tier, no key required
+    if not data:
+        return []
+    results = []
+    for paper in data.get("data", []):
+        title = (paper.get("title") or "").strip()
+        abstract = (paper.get("abstract") or "").strip()
+        year = paper.get("year", "")
+        paper_id = paper.get("paperId", "")
+        if title:
+            snippet = abstract[:350] if abstract else f"Published {year}"
+            results.append({
+                "source": "Semantic Scholar",
+                "title": title,
+                "snippet": snippet,
+                "url": f"https://www.semanticscholar.org/paper/{paper_id}" if paper_id else "",
+            })
+    return results
+
+
+# ── Ranker ────────────────────────────────────────────────────
+def _score_result(result: Dict[str, str], query_tokens: set) -> float:
+    """
+    Word-boundary keyword overlap score over title + snippet.
+    Uses \\b boundaries so 'diet' does not match 'dietary' or 'Diet Your LLM'
+    when the surrounding context is unrelated.
+    Title matches are weighted 2× over snippet matches.
+    """
+    title  = result.get("title",   "").lower()
+    snippet = result.get("snippet", "").lower()
+    score = 0.0
+    for tok in query_tokens:
+        pattern = r"\b" + re.escape(tok) + r"\b"
+        if re.search(pattern, title):
+            score += 2.0   # title hit worth more
+        elif re.search(pattern, snippet):
+            score += 1.0
+    # Normalise: max possible = 2 * len(tokens) (all in title)
+    return score / max(2 * len(query_tokens), 1)
+
+
+# ── Domain router ─────────────────────────────────────────────
+_HEALTH_TERMS = {
+    "weight", "loss", "diet", "nutrition", "obesity", "diabetes", "cancer",
+    "disease", "clinical", "patient", "treatment", "therapy", "drug", "vaccine",
+    "symptom", "diagnosis", "exercise", "sleep", "mental", "health", "medical",
+    "hospital", "surgery", "vitamin", "protein", "calorie", "cholesterol",
+    "blood", "heart", "brain", "muscle", "bone", "immune", "stress", "anxiety",
+    "depression", "alzheimer", "dementia", "covid", "infection", "bacteria", "virus",
+}
+_CS_TERMS = {
+    "neural", "network", "transformer", "attention", "algorithm", "machine",
+    "learning", "model", "llm", "gpu", "cuda", "compiler", "optimization",
+    "gradient", "backpropagation", "dataset", "benchmark", "inference", "training",
+    "quantum", "cryptography", "blockchain", "compiler", "kernel", "latency",
+}
+
+def _detect_domain(query_tokens: set) -> str:
+    """Return 'health', 'cs', or 'general' based on query keywords."""
+    health_hits = len(query_tokens & _HEALTH_TERMS)
+    cs_hits     = len(query_tokens & _CS_TERMS)
+    if health_hits > cs_hits and health_hits >= 1:
+        return "health"
+    if cs_hits > health_hits and cs_hits >= 1:
+        return "cs"
+    return "general"
+
+
+class ResearchRetriever:
+    """
+    Parallel multi-source retriever. Returns ranked snippets ready for
+    injection as model context.
+
+    Enabled sources: "arxiv", "pubmed", "semanticscholar" (any combination).
+    """
+
+    _SOURCE_MAP: Dict[str, Any] = {
+        "arxiv":           _fetch_arxiv,
+        "pubmed":          _fetch_pubmed,
+        "semanticscholar": _fetch_semantic_scholar,
+    }
+
+    def __init__(
+        self,
+        sources: Optional[List[str]] = None,
+        max_results_per_source: int = 3,
+        auto_route: bool = True,
+    ) -> None:
+        self.auto_route = auto_route
+        if sources is None:
+            sources = ["arxiv", "semanticscholar"]
+        self.sources = [s.lower() for s in sources if s.lower() in self._SOURCE_MAP]
+        self.max_results_per_source = max_results_per_source
+
+    def fetch(self, query: str, min_relevance: float = 0.20) -> List[Dict[str, str]]:
+        """
+        Fetch from all enabled sources in parallel, filter by minimum relevance
+        score (word-boundary matched), rank, and return.
+        Domain routing: health queries automatically promote pubmed and filter
+        arXiv CS/ML false-positives.
+        """
+        api_query = _normalize_query(query)
+        query_tokens = set(re.findall(r"\w+", api_query.lower())) - _QUERY_STRIP
+        domain = _detect_domain(query_tokens)
+
+        # Build effective source list — auto-promote best source per domain
+        effective_sources = list(self.sources)
+        if self.auto_route and domain == "health":
+            if "pubmed" not in effective_sources:
+                effective_sources.insert(0, "pubmed")
+                print(f"  [RESEARCH] Health query detected — added pubmed automatically")
+            effective_sources = ["pubmed"] + [s for s in effective_sources if s != "pubmed"]
+        elif self.auto_route and domain == "cs":
+            if "arxiv" not in effective_sources:
+                effective_sources.insert(0, "arxiv")
+                print(f"  [RESEARCH] CS/ML query detected — added arxiv automatically")
+
+        def _run(q: str, src_list: list) -> Dict[str, int]:
+            nonlocal all_results
+            source_counts: Dict[str, int] = {src: 0 for src in src_list}
+            with ThreadPoolExecutor(max_workers=max(len(src_list), 1)) as pool:
+                futures = {
+                    pool.submit(
+                        self._SOURCE_MAP[src], q, self.max_results_per_source
+                    ): src
+                    for src in src_list
+                    if src in self._SOURCE_MAP
+                }
+                for fut in as_completed(futures):
+                    src = futures[fut]
+                    try:
+                        res = fut.result()
+                        source_counts[src] = len(res)
+                        all_results.extend(res)
+                    except Exception:
+                        source_counts[src] = -1
+            return source_counts
+
+        all_results: List[Dict[str, str]] = []
+        source_counts = _run(api_query, effective_sources)
+
+        # If every source returned 0, retry with first 3 keywords only
+        if all(v == 0 for v in source_counts.values()):
+            short_query = " ".join(api_query.split()[:3])
+            if short_query and short_query != api_query:
+                print(f"  [RESEARCH] Retrying with shorter query: '{short_query}'")
+                all_results = []
+                source_counts = _run(short_query, effective_sources)
+
+        # Report per-source yield
+        for src, count in source_counts.items():
+            if count == 0:
+                print(f"  [RESEARCH] ⚠ {src}: 0 results (may be rate-limited or unreachable)")
+            elif count == -1:
+                print(f"  [RESEARCH] ⚠ {src}: fetch error")
+
+        # Filter by word-boundary relevance
+        if query_tokens:
+            all_results = [
+                r for r in all_results
+                if _score_result(r, query_tokens) >= min_relevance
+            ]
+
+        # For health queries, strip arXiv results that lack any health term
+        # (catches CS papers with health-adjacent words in their titles)
+        if domain == "health":
+            def _is_health_result(r: Dict) -> bool:
+                text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
+                return (
+                    r.get("source") != "arXiv"
+                    or any(re.search(r"\b" + re.escape(t) + r"\b", text) for t in _HEALTH_TERMS)
+                )
+            filtered = [r for r in all_results if _is_health_result(r)]
+            if filtered:
+                all_results = filtered
+
+        all_results.sort(key=lambda r: _score_result(r, query_tokens), reverse=True)
+        return all_results
+
+    def format_context(self, results: List[Dict[str, str]], max_chars: int = 1200) -> str:
+        """Format retrieved snippets as a concise context block."""
+        lines = ["[RESEARCH CONTEXT — from peer-reviewed sources]"]
+        budget = max_chars
+        for i, r in enumerate(results, 1):
+            entry = f"[{i}] ({r['source']}) {r['title']}: {r['snippet']}"
+            if len(entry) > budget:
+                entry = entry[:budget]
+            lines.append(entry)
+            budget -= len(entry)
+            if budget <= 0:
+                break
+        return "\n".join(lines)
+
+
+# ── Metacognition eval pass ───────────────────────────────────
+def research_eval_pass(
+    answer: str,
+    context: str,
+    model,
+    tokenizer,
+    confidence_threshold: float = 0.72,
+    max_tokens: int = 60,
+) -> Dict[str, Any]:
+    """
+    Ask the model whether the generated answer is supported by the retrieved
+    sources. Returns a dict with keys: supported (bool), confidence (float),
+    verdict_text (str).
+
+    Uses a dedicated closed-book prompt so the eval is independent of the
+    generation pass — same principle as verify_first_gate.
+    """
+    eval_prompt = (
+        "You are a strict fact-checker. Read the sources and the claim below.\n"
+        "Sources:\n"
+        f"{context}\n\n"
+        f"Claim: {answer}\n\n"
+        "Is the claim fully supported by the sources above? "
+        "Reply with YES or NO on the first line, then one sentence of justification."
+    )
+
+    if hasattr(tokenizer, "apply_chat_template"):
         try:
-            found_titles = _wiki_search_titles(q, headers=headers, timeout_sec=timeout_sec, limit=3)
-        except (URLError, HTTPError, TimeoutError, json.JSONDecodeError):
-            continue
-        for t in found_titles:
-            if t not in seen_titles:
-                seen_titles.add(t)
-                titles.append(t)
-        if len(titles) >= 8:
+            formatted = tokenizer.apply_chat_template(
+                [{"role": "user", "content": eval_prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:
+            formatted = eval_prompt
+    else:
+        formatted = eval_prompt
+
+    inputs = tokenizer(formatted, return_tensors="pt").to(model.device, non_blocking=True)
+    input_len = inputs["input_ids"].shape[1]
+
+    class _ProbTracker(LogitsProcessor):
+        __slots__ = ("probs",)
+        def __init__(self): self.probs: List[float] = []
+        def __call__(self, iids, scores):
+            self.probs.append(torch.softmax(scores.float(), dim=-1).max(dim=-1).values.item())
+            return scores
+
+    tracker = _ProbTracker()
+    model.eval()
+    with torch.inference_mode():
+        out = model.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            do_sample=False,
+            logits_processor=LogitsProcessorList([tracker]),
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    verdict_text = tokenizer.decode(out[0][input_len:], skip_special_tokens=True).strip()
+    avg_conf = sum(tracker.probs) / max(len(tracker.probs), 1)
+    first_line = verdict_text.splitlines()[0].strip().upper() if verdict_text else ""
+    supported = first_line.startswith("YES") and avg_conf >= confidence_threshold
+    return {
+        "supported": supported,
+        "confidence": avg_conf,
+        "verdict_text": verdict_text,
+    }
+
+
+# ── Top-level research answer function ───────────────────────
+def generate_research_answer(
+    query: str,
+    model,
+    tokenizer,
+    retriever: "ResearchRetriever",
+    max_tokens: int = 200,
+    meta_threshold: float = 0.72,
+    run_eval: bool = True,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """
+    Full research pipeline:
+      1. Retrieve from reliable sources
+      2. Generate answer grounded to context
+      3. Eval pass to verify claim against sources
+    Returns dict with answer, sources, eval result.
+    """
+    if verbose:
+        print(f"\n  [RESEARCH] Fetching sources for: {query[:80]}")
+
+    results = retriever.fetch(query)
+    if verbose:
+        print(f"  [RESEARCH] {len(results)} result(s) from: "
+              f"{', '.join(sorted({r['source'] for r in results}))}")
+
+    if not results:
+        return {
+            "answer": "No relevant sources found for this query.",
+            "sources": [],
+            "context": "",
+            "eval": {"supported": None, "confidence": 0.0, "verdict_text": "no sources"},
+            "grounded": False,
+        }
+
+    context = retriever.format_context(results)
+
+    # Grounded prompt: model must answer using the provided sources
+    grounded_prompt = (
+        f"{context}\n\n"
+        f"Using only the sources above, answer the following question concisely and accurately:\n"
+        f"Question: {query}"
+    )
+
+    gen_result = generate_with_post_guard(
+        grounded_prompt,
+        model,
+        tokenizer,
+        max_tokens=max_tokens,
+        threshold=meta_threshold,
+        use_chat_template=True,
+        enable_retrieval_fallback=False,  # already have context
+        # Grounded prompts are long — per-token confidence naturally drops on
+        # small models reading a large context block. Accuracy is validated by
+        # the separate eval pass, not the uncertain-ratio trigger here.
+        uncertain_ratio_trigger=0.85,
+    )
+    answer = gen_result["safe_output"]
+
+    eval_result: Dict[str, Any] = {"supported": None, "confidence": 0.0, "verdict_text": "skipped"}
+    if run_eval and not gen_result["blocked"]:
+        if verbose:
+            print("  [RESEARCH] Running metacognition eval pass...")
+        eval_result = research_eval_pass(
+            answer=answer,
+            context=context,
+            model=model,
+            tokenizer=tokenizer,
+            confidence_threshold=meta_threshold,
+        )
+        if verbose:
+            verdict = "✓ SUPPORTED" if eval_result["supported"] else "⚠ UNVERIFIED"
+            print(f"  [RESEARCH] Eval: {verdict} "
+                  f"(conf={eval_result['confidence']:.2%})")
+            if not eval_result["supported"]:
+                print(f"  [RESEARCH] Verdict: {eval_result['verdict_text'][:120]}")
+
+    return {
+        "answer": answer,
+        "sources": results,
+        "context": context,
+        "eval": eval_result,
+        "grounded": not gen_result["blocked"],
+    }
+
+
+def research_chat_loop(
+    model,
+    tokenizer,
+    retriever: "ResearchRetriever",
+    artifact_renderer: "ArtifactRenderer",
+    skill_registry: "SkillRegistry",
+    max_tokens: int = 200,
+    meta_threshold: float = 0.72,
+    run_eval: bool = True,
+    max_history_turns: int = 4,
+) -> None:
+    """Interactive research chat — every query is grounded to live sources."""
+    print("\n" + "=" * 65)
+    print("  HydrusOPT Research Mode")
+    src_names = ", ".join(retriever.sources) if retriever.sources else "none"
+    print(f"  Sources : {src_names}")
+    print(f"  Eval    : {'on (metacognition)' if run_eval else 'off'}")
+    print("  Type 'exit' to quit.")
+    print("=" * 65)
+
+    history: List[Dict[str, str]] = []
+
+    while True:
+        try:
+            user_input = input("\n  You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Bye.")
             break
 
-    if not titles:
-        return False, ""
-
-    best_title = ""
-    best_extract = ""
-    best_score = float("-inf")
-
-    for title in titles[:8]:
-        try:
-            extract = _wiki_fetch_summary(title, headers=headers, timeout_sec=timeout_sec)
-        except (URLError, HTTPError, TimeoutError, json.JSONDecodeError):
+        if not user_input:
             continue
-        if not extract:
-            continue
-        score = _score_candidate_summary(normalized_prompt, title, extract)
-        if score > best_score:
-            best_score = score
-            best_title = title
-            best_extract = extract
+        if user_input.lower() in ("exit", "quit", "bye"):
+            print("  Bye.")
+            break
 
-    if not best_extract:
-        return False, ""
+        result = generate_research_answer(
+            query=user_input,
+            model=model,
+            tokenizer=tokenizer,
+            retriever=retriever,
+            max_tokens=max_tokens,
+            meta_threshold=meta_threshold,
+            run_eval=run_eval,
+            verbose=True,
+        )
 
-    targeted = _extract_targeted_fact(normalized_prompt, best_extract)
-    text = targeted if targeted else best_extract[:400]
-    if best_title and targeted:
-        text = f"{text} (source: {best_title})"
-    final_text = text[:400]
-    _RETRIEVAL_CACHE[normalized_prompt] = final_text
-    return True, final_text
+        answer = result["answer"]
+        eval_info = result["eval"]
 
+        # Append eval status indicator
+        if eval_info.get("supported") is True:
+            indicator = "  [✓ source-verified]"
+        elif eval_info.get("supported") is False:
+            indicator = "  [⚠ unverified — treat with caution]"
+        else:
+            indicator = ""
 
+        print(f"\n  HydrusOPT: {answer}")
+        if indicator:
+            print(indicator)
 
-def _adaptive_max_tokens(prompt: str, override: int = 0) -> int:
-    """Return max token budget — high ceiling so model stops naturally at EOS."""
-    if override > 0:
-        return override
-    return 512
+        # Print sources
+        if result["sources"]:
+            print("\n  Sources:")
+            for i, s in enumerate(result["sources"][:3], 1):
+                url = s.get("url", "")
+                print(f"    [{i}] ({s['source']}) {s['title'][:70]}")
+                if url:
+                    print(f"         {url}")
+
+        # Render any code artifacts in the answer
+        art_paths = artifact_renderer.detect_and_render(answer)
+        for p in art_paths:
+            abs_p = os.path.abspath(p)
+            print(f"\n  [ARTIFACT] {abs_p}")
+            try:
+                import webbrowser
+                webbrowser.open(f"file:///{abs_p}")
+            except Exception:
+                pass
+
+        history.append({"role": "user",      "content": user_input})
+        history.append({"role": "assistant", "content": answer})
+        if len(history) > max_history_turns * 2:
+            history = history[-(max_history_turns * 2):]
 
 
 def check_truth_consistency(
@@ -3199,24 +2817,6 @@ def check_truth_consistency(
     threshold: float = 0.5,
     enable_retrieval_fallback: bool = False,
     guard_mode: str = "post",
-    verify_first: bool = False,
-    external_selection: bool = False,
-    verify_votes: int = 3,
-    verify_no_threshold: int = 2,
-    verify_high_conf_bypass: float = 0.90,
-    math_bypass_conf: float = 0.85,
-    factual_uncertain_ratio_trigger: float = 0.50,
-    enable_internal_self_correct: bool = False,
-    internal_max_rounds: int = 2,
-    internal_target_uncertain_ratio: float = 0.45,
-    internal_memory_max_tokens: int = 80,
-    internal_enable_parametric_memory: bool = True,
-    enable_hcl: bool = False,
-    hcl_mode: str = "balanced",
-    hcl_user: str = "default_user",
-    insecure_dev_mode: bool = False,
-    hcl_lightweight: bool = False,
-    profile_timing: bool = False,
 ) -> list:
     """
     Ask the model the same question `samples` times.
@@ -3225,27 +2825,6 @@ def check_truth_consistency(
     """
     print(f"\n  {'─'*55}")
     print(f"  [GUARD] Consistency check: \"{prompt}\"")
-    
-    if enable_hcl:
-        from hcl import HCL, generate_with_hcl
-        print(f"  [HCL] Initializing cognitive middleware ({hcl_mode} mode)...")
-        hcl_obj = HCL(model, tokenizer, mode=hcl_mode, user_id=hcl_user, insecure_dev_mode=insecure_dev_mode, hcl_lightweight=hcl_lightweight, profile_timing=profile_timing)
-        runs = []
-        t0 = time.time()
-        for i in range(samples):
-            text, stats = generate_with_hcl(prompt, model, tokenizer, hcl_obj, max_new_tokens=max_tokens)
-            print(f"  [HCL Run {i+1}] Memory graph size: {stats['memory_nodes']} nodes")
-            runs.append({"text": text, "entropy": 0.0})
-        elapsed = time.time() - t0
-        if profile_timing:
-            print(f"  [TIMING] Guard consensus loop took {elapsed:.4f}s")
-        
-        consistent = True if len(runs) < 2 else (runs[0]["text"][:30] == runs[1]["text"][:30])
-        print(f"\n  Match  : {'✅ CONSISTENT' if len(runs) < 2 or consistent else '❌ INCONSISTENT'}")
-        for i, r in enumerate(runs):
-            print(f"  Run {i+1}  : {r['text'][:80]}")
-        return runs
-
     runs = []
     for _ in range(samples):
         if guard_mode == "token":
@@ -3254,18 +2833,6 @@ def check_truth_consistency(
                 max_tokens=max_tokens, threshold=threshold,
                 stop_on_uncertainty=False, use_chat_template=False,
                 enable_retrieval_fallback=enable_retrieval_fallback,
-                verify_first=verify_first,
-                external_selection=external_selection,
-                verify_votes=verify_votes,
-                verify_no_threshold=verify_no_threshold,
-                verify_high_conf_bypass=verify_high_conf_bypass,
-                math_bypass_conf=math_bypass_conf,
-                factual_uncertain_ratio_trigger=factual_uncertain_ratio_trigger,
-                enable_internal_self_correct=enable_internal_self_correct,
-                internal_max_rounds=internal_max_rounds,
-                internal_target_uncertain_ratio=internal_target_uncertain_ratio,
-                internal_memory_max_tokens=internal_memory_max_tokens,
-                internal_enable_parametric_memory=internal_enable_parametric_memory,
             )
             text = getattr(plugin, "safe_output", None)
             if not text:
@@ -3281,18 +2848,6 @@ def check_truth_consistency(
                 threshold=threshold,
                 use_chat_template=False,
                 enable_retrieval_fallback=enable_retrieval_fallback,
-                verify_first=verify_first,
-                external_selection=external_selection,
-                verify_votes=verify_votes,
-                verify_no_threshold=verify_no_threshold,
-                verify_high_conf_bypass=verify_high_conf_bypass,
-                math_bypass_conf=math_bypass_conf,
-                factual_uncertain_ratio_trigger=factual_uncertain_ratio_trigger,
-                enable_internal_self_correct=enable_internal_self_correct,
-                internal_max_rounds=internal_max_rounds,
-                internal_target_uncertain_ratio=internal_target_uncertain_ratio,
-                internal_memory_max_tokens=internal_memory_max_tokens,
-                internal_enable_parametric_memory=internal_enable_parametric_memory,
             )
             # Map confidence proxy to entropy-like value for comparable reporting.
             runs.append({"text": result["safe_output"], "entropy": 1.0 - result["avg_confidence"]})
@@ -3306,14 +2861,399 @@ def check_truth_consistency(
     return runs
 
 
+
+# ═══════════════════════════════════════════════════════════════
+# SKILLS  (lightweight tool-calling / function registry)
+# ═══════════════════════════════════════════════════════════════
+
+# ── Safe math evaluator (no eval(), AST-only) ──────────────────
+_SAFE_OPS: Dict[type, Callable] = {
+    ast.Add:      _operator_module.add,
+    ast.Sub:      _operator_module.sub,
+    ast.Mult:     _operator_module.mul,
+    ast.Div:      _operator_module.truediv,
+    ast.FloorDiv: _operator_module.floordiv,
+    ast.Mod:      _operator_module.mod,
+    ast.Pow:      _operator_module.pow,
+    ast.USub:     _operator_module.neg,
+    ast.UAdd:     _operator_module.pos,
+}
+
+def _eval_node(node: ast.AST) -> float:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_OPS:
+        return _SAFE_OPS[type(node.op)](_eval_node(node.left), _eval_node(node.right))
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _SAFE_OPS:
+        return _SAFE_OPS[type(node.op)](_eval_node(node.operand))
+    raise ValueError(f"Unsupported expression: {ast.dump(node)}")
+
+def _skill_calculator(expr: str) -> str:
+    try:
+        tree = ast.parse(expr.strip(), mode="eval")
+        result = _eval_node(tree.body)
+        # Format: drop redundant .0 on whole numbers
+        return str(int(result) if isinstance(result, float) and result.is_integer() else result)
+    except Exception as e:
+        return f"[CALC ERROR] {e}"
+
+def _skill_datetime() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+def _skill_word_count(text: str) -> str:
+    words = len(text.split())
+    chars = len(text)
+    return f"{words} words, {chars} characters"
+
+def _skill_upper(text: str) -> str:
+    return text.upper()
+
+
+class SkillRegistry:
+    """
+    Lightweight function registry for local tool-calling.
+
+    The model signals a skill call by outputting a JSON object on its own line:
+        {"skill": "calculator", "args": {"expr": "12345 * 67890"}}
+
+    The registry intercepts this, runs the function, and returns the result
+    string so it can be injected back into the conversation context.
+    """
+
+    _CALL_RE = re.compile(
+        r'^\s*\{[^{}]*"skill"\s*:\s*"([^"]+)"[^{}]*"args"\s*:\s*(\{[^{}]*\})[^{}]*\}\s*$',
+        re.MULTILINE,
+    )
+
+    def __init__(self) -> None:
+        self._registry: Dict[str, Dict] = {}
+        # Register built-ins
+        self.register("calculator",  _skill_calculator,  "Evaluate a math expression.",
+                      {"expr": "string — arithmetic expression, e.g. '12 * 34'"})
+        self.register("datetime",    lambda: _skill_datetime(),  "Return current UTC date and time.", {})
+        self.register("word_count",  _skill_word_count,  "Count words and characters in text.",
+                      {"text": "string"})
+        self.register("upper",       _skill_upper,       "Convert text to upper-case.",
+                      {"text": "string"})
+
+    def register(self, name: str, fn: Callable, description: str = "", params: Optional[Dict] = None) -> None:
+        self._registry[name] = {"fn": fn, "description": description, "params": params or {}}
+
+    # ── System prompt injection ────────────────────────────────
+    def system_prompt(self) -> str:
+        lines = [
+            "You have access to the following skills.",
+            "To call a skill, output ONLY the JSON object on its own line — no other text on that line.",
+            "Format:  {\"skill\": \"<name>\", \"args\": {<key>: <value>, ...}}",
+            "",
+            "Available skills:",
+        ]
+        for name, meta in self._registry.items():
+            param_str = ", ".join(f"{k}: {v}" for k, v in meta["params"].items()) if meta["params"] else "no args"
+            lines.append(f'  {name}({param_str}) — {meta["description"]}')
+        lines += [
+            "",
+            "After you receive a [SKILL RESULT], incorporate it naturally into your reply.",
+            "Never call a skill more than once per turn.",
+        ]
+        return "\n".join(lines)
+
+    # ── Detection + execution ──────────────────────────────────
+    def detect_call(self, text: str) -> Optional[Tuple[str, Dict]]:
+        """Return (skill_name, args_dict) if text contains a valid skill call, else None."""
+        for line in text.splitlines():
+            m = self._CALL_RE.match(line)
+            if m:
+                skill_name = m.group(1)
+                try:
+                    args = json.loads(m.group(2))
+                    return skill_name, args
+                except json.JSONDecodeError:
+                    continue
+        return None
+
+    def execute(self, name: str, args: Dict) -> str:
+        if name not in self._registry:
+            return f"[SKILL ERROR] Unknown skill '{name}'. Available: {list(self._registry)}"
+        try:
+            fn = self._registry[name]["fn"]
+            return str(fn(**args) if args else fn())
+        except TypeError as e:
+            return f"[SKILL ERROR] Bad arguments for '{name}': {e}"
+        except Exception as e:
+            return f"[SKILL ERROR] {e}"
+
+    def list_names(self) -> List[str]:
+        return list(self._registry.keys())
+
+
+# ═══════════════════════════════════════════════════════════════
+# ARTIFACTS  (code / HTML preview renderer)
+# ═══════════════════════════════════════════════════════════════
+
+_ARTIFACT_CODE_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HydrusOPT Artifact — {title}</title>
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column}}
+  header{{background:#161b22;border-bottom:1px solid #30363d;padding:10px 18px;display:flex;align-items:center;gap:10px}}
+  .logo{{font-weight:700;font-size:13px;color:#58a6ff;letter-spacing:.5px}}
+  .badge{{background:#1f3a5f;border:1px solid #388bfd55;border-radius:4px;padding:2px 8px;font-size:11px;color:#79c0ff}}
+  .artifact-title{{font-size:12px;color:#8b949e}}
+  pre{{flex:1;overflow:auto;padding:20px 24px;font-family:'Cascadia Code','Fira Code',Consolas,monospace;font-size:13px;line-height:1.65;tab-size:4}}
+  .ln{{display:inline-block;width:2.5em;color:#484f58;text-align:right;margin-right:16px;user-select:none;flex-shrink:0}}
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">HydrusOPT</span>
+  <span class="badge">{lang}</span>
+  <span class="artifact-title">{title}</span>
+</header>
+<pre>{body}</pre>
+</body>
+</html>
+"""
+
+_ARTIFACT_HTML_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HydrusOPT Artifact — {title}</title>
+<style>
+  body{{font-family:'Segoe UI',system-ui,sans-serif;margin:0;background:#fff;}}
+  .hydrus-bar{{background:#0d1117;color:#c9d1d9;font-size:12px;padding:6px 16px;display:flex;gap:10px;align-items:center}}
+  .hydrus-bar .logo{{font-weight:700;color:#58a6ff}}
+  .hydrus-bar .badge{{background:#1f3a5f;border-radius:3px;padding:1px 6px;color:#79c0ff;font-size:11px}}
+  .content{{padding:20px}}
+</style>
+</head>
+<body>
+<div class="hydrus-bar"><span class="logo">HydrusOPT</span><span class="badge">html</span><span>{title}</span></div>
+<div class="content">{body}</div>
+</body>
+</html>
+"""
+
+_ARTIFACT_CODE_BLOCK_RE = re.compile(
+    r"```(\w+)?\n(.*?)```",
+    re.DOTALL,
+)
+
+
+class ArtifactRenderer:
+    """
+    Detects code/HTML fences in model output and writes self-contained
+    HTML artifact files to `output_dir`. Returns file paths so the caller
+    can open them in a browser.
+    """
+
+    def __init__(self, output_dir: str = "artifacts") -> None:
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        self._counter = 0
+
+    def _next_path(self, lang: str) -> str:
+        self._counter += 1
+        fname = f"artifact_{self._counter:03d}.html"
+        return os.path.join(self.output_dir, fname)
+
+    def _add_line_numbers(self, code: str) -> str:
+        lines = code.splitlines()
+        parts = []
+        for i, line in enumerate(lines, 1):
+            escaped = _html_module.escape(line)
+            parts.append(f'<span class="ln">{i}</span>{escaped}')
+        return "\n".join(parts)
+
+    def render_code(self, code: str, lang: str, title: str) -> str:
+        """Write a syntax-highlighted code artifact. Returns file path."""
+        path = self._next_path(lang)
+        body = self._add_line_numbers(code)
+        content = _ARTIFACT_CODE_TEMPLATE.format(
+            title=_html_module.escape(title), lang=lang or "text", body=body
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+
+    def render_html(self, code: str, title: str) -> str:
+        """Wrap raw HTML in preview chrome. Returns file path."""
+        path = self._next_path("html")
+        content = _ARTIFACT_HTML_TEMPLATE.format(
+            title=_html_module.escape(title), body=code
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+
+    def detect_and_render(self, text: str) -> List[str]:
+        """
+        Scan model output for fenced code blocks. Render each as an artifact.
+        Returns list of file paths written (empty if none found).
+        """
+        paths = []
+        for m in _ARTIFACT_CODE_BLOCK_RE.finditer(text):
+            lang = (m.group(1) or "text").lower().strip()
+            code = m.group(2)
+            title = f"artifact {self._counter + 1}"
+            if lang in ("html", "htm"):
+                path = self.render_html(code, title)
+            else:
+                path = self.render_code(code, lang, title)
+            paths.append(path)
+        return paths
+
+
+# ═══════════════════════════════════════════════════════════════
+# SKILL-AWARE GENERATION + INTERACTIVE CHAT LOOP
+# ═══════════════════════════════════════════════════════════════
+
+def _build_chat_prompt(tokenizer, messages: List[Dict[str, str]]) -> str:
+    """Apply chat template if available; fall back to simple role prefixes."""
+    if hasattr(tokenizer, "apply_chat_template"):
+        try:
+            return tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        except Exception:
+            pass
+    parts = []
+    for msg in messages:
+        role = msg["role"].capitalize()
+        parts.append(f"{role}: {msg['content']}")
+    parts.append("Assistant:")
+    return "\n".join(parts)
+
+
+def generate_with_skills(
+    model,
+    tokenizer,
+    messages: List[Dict[str, str]],
+    skill_registry: SkillRegistry,
+    artifact_renderer: ArtifactRenderer,
+    max_new_tokens: int = 200,
+    max_skill_calls: int = 3,
+) -> str:
+    """
+    Generate a response, detect and execute any skill calls, re-generate
+    with results injected, then detect and render any output artifacts.
+
+    Returns the final assistant text.
+    """
+    device = next(model.parameters()).device
+    model.eval()
+    current_messages = list(messages)
+
+    for _call_round in range(max_skill_calls + 1):
+        prompt = _build_chat_prompt(tokenizer, current_messages)
+        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+
+        with torch.inference_mode():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+        new_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
+        raw_text = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+
+        # Detect skill call
+        call = skill_registry.detect_call(raw_text)
+        if call is not None and _call_round < max_skill_calls:
+            skill_name, skill_args = call
+            result = skill_registry.execute(skill_name, skill_args)
+            print(f"\n  [SKILL] {skill_name}({skill_args}) → {result}")
+            # Inject partial assistant turn + tool result and loop
+            current_messages.append({"role": "assistant", "content": raw_text})
+            current_messages.append({
+                "role": "user",
+                "content": f"[SKILL RESULT for {skill_name}] {result}\nNow answer the original question using this result."
+            })
+            continue
+
+        # No skill call (or cap hit) — this is the final response
+        artifact_paths = artifact_renderer.detect_and_render(raw_text)
+        for path in artifact_paths:
+            abs_path = os.path.abspath(path)
+            print(f"\n  [ARTIFACT] Rendered → {abs_path}")
+            try:
+                webbrowser.open(f"file:///{abs_path}")
+            except Exception:
+                pass  # Non-fatal; path is printed above
+
+        return raw_text
+
+    return raw_text  # unreachable but satisfies type checkers
+
+
+def chat_loop(
+    model,
+    tokenizer,
+    skill_registry: SkillRegistry,
+    artifact_renderer: ArtifactRenderer,
+    max_new_tokens: int = 200,
+    max_history_turns: int = 6,
+) -> None:
+    """Interactive REPL with skill-calling and artifact rendering."""
+    skill_sys = skill_registry.system_prompt()
+    history: List[Dict[str, str]] = []
+
+    print("\n" + "=" * 65)
+    print("  HydrusOPT Chat  —  Skills: " + ", ".join(skill_registry.list_names()))
+    print("  Type 'exit' or Ctrl+C to quit.")
+    print("=" * 65)
+
+    while True:
+        try:
+            user_input = input("\n  You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Bye.")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("exit", "quit", "bye"):
+            print("  Bye.")
+            break
+
+        messages = [{"role": "system", "content": skill_sys}] + history + [
+            {"role": "user", "content": user_input}
+        ]
+
+        response = generate_with_skills(
+            model, tokenizer, messages,
+            skill_registry, artifact_renderer,
+            max_new_tokens=max_new_tokens,
+        )
+
+        print(f"\n  HydrusOPT: {response}")
+
+        history.append({"role": "user",      "content": user_input})
+        history.append({"role": "assistant", "content": response})
+        # Bound history to last N turns
+        if len(history) > max_history_turns * 2:
+            history = history[-(max_history_turns * 2):]
+
+
 # ═══════════════════════════════════════════════════════════════
 # BENCHMARK + RESULTS
 # ═══════════════════════════════════════════════════════════════
 
+
 TEST_PROMPTS = [
-    "What is 2+2? Answer with one integer only.",
-    "What is the capital of France?",
-    "What were the main causes of World War 1?",
+    "Explain quantum entanglement to a 10 year old.",
+    "What is the difference between RAM and storage?",
 ]
 
 # Models used by --benchmark-multi
@@ -3326,167 +3266,10 @@ MODELS = [
 # Prompts used by --stress-test
 STRESS_TESTS = [
     {"type": "Ambiguous",    "prompt": "What is the capital of South Ossetia?"},
+    {"type": "Nonsense",     "prompt": "Why is the moon made of green cheese?"},
     {"type": "Contradiction","prompt": "The capital of France is Berlin. Explain."},
     {"type": "Math",         "prompt": "What is 12345 * 67890?"},
 ]
-
-
-def run_threshold_sweep(
-    model,
-    tokenizer,
-    args,
-    meta_threshold_grid: Optional[List[float]] = None,
-    bypass_conf_grid:    Optional[List[float]] = None,
-    verify_votes_grid:   Optional[List[int]]   = None,
-    max_tokens: int = 80,
-) -> Dict[str, Any]:
-    """
-    Grid-search (meta_threshold × verify_high_conf_bypass × verify_votes) on TEST_PROMPTS.
-
-    For each combination:
-      - Times wall-clock latency per verified answer
-      - Counts how often the verify gate actually fires (overhead proxy)
-      - Runs a 2-sample consistency check to detect hallucinations slipping through
-
-    Prints a ranked Pareto table and highlights the optimal operating point
-    (lowest latency with zero consistency failures).
-    """
-    meta_threshold_grid = meta_threshold_grid or [0.50, 0.65, 0.75, 0.85, 0.95]
-    bypass_conf_grid    = bypass_conf_grid    or [0.60, 0.70, 0.80, 0.90]
-    verify_votes_grid   = verify_votes_grid   or [1, 3]
-
-    results = []
-    total_combos = len(meta_threshold_grid) * len(bypass_conf_grid) * len(verify_votes_grid)
-    combo_idx = 0
-
-    print(f"\n  {'═'*65}")
-    print(f"  THRESHOLD SWEEP  ({total_combos} combinations × {len(TEST_PROMPTS)} prompts)")
-    print(f"  {'═'*65}")
-    print(f"  {'thresh':>7} {'bypass':>7} {'votes':>6} {'sec/ans':>9} {'verify%':>8} {'consistent':>11}")
-    print(f"  {'─'*55}")
-
-    for mt in meta_threshold_grid:
-        for bc in bypass_conf_grid:
-            for vv in verify_votes_grid:
-                combo_idx += 1
-                verify_fired = 0
-                consistent_count = 0
-
-                t0 = time.perf_counter()
-                model.eval()
-                with torch.inference_mode():
-                    for prompt in TEST_PROMPTS:
-                        res = generate_with_post_guard(
-                            prompt,
-                            model,
-                            tokenizer,
-                            max_tokens=max_tokens,
-                            threshold=mt,
-                            use_chat_template=True,
-                            enable_retrieval_fallback=False,
-                            verify_first=True,
-                            external_selection=getattr(args, "external_selection", False),
-                            verify_votes=vv,
-                            verify_no_threshold=getattr(args, "verify_no_threshold", 1),
-                            verify_high_conf_bypass=bc,
-                            math_bypass_conf=getattr(args, "math_bypass_conf", 0.80),
-                            factual_uncertain_ratio_trigger=getattr(args, "factual_uncertain_ratio_trigger", 0.50),
-                            enable_internal_self_correct=False,  # isolate threshold effect
-                            internal_max_rounds=1,
-                            internal_target_uncertain_ratio=0.45,
-                            internal_memory_max_tokens=80,
-                            internal_enable_parametric_memory=False,
-                        )
-                        if res.get("verify_gate") and res["verify_gate"].get("votes"):
-                            verify_fired += 1
-
-                elapsed = time.perf_counter() - t0
-                latency = elapsed / len(TEST_PROMPTS)
-
-                # Quick consistency check: 2 runs per prompt, check first-30-char match
-                consistent = True
-                with torch.inference_mode():
-                    for prompt in TEST_PROMPTS:
-                        out_a = generate_with_post_guard(
-                            prompt, model, tokenizer,
-                            max_tokens=max_tokens, threshold=mt,
-                            use_chat_template=True, enable_retrieval_fallback=False,
-                            verify_first=True,
-                            external_selection=getattr(args, "external_selection", False),
-                            verify_votes=vv, verify_no_threshold=getattr(args, "verify_no_threshold", 1),
-                            verify_high_conf_bypass=bc,
-                            math_bypass_conf=getattr(args, "math_bypass_conf", 0.80),
-                            factual_uncertain_ratio_trigger=getattr(args, "factual_uncertain_ratio_trigger", 0.50),
-                            enable_internal_self_correct=False, internal_max_rounds=1,
-                            internal_target_uncertain_ratio=0.45, internal_memory_max_tokens=80,
-                            internal_enable_parametric_memory=False,
-                        )
-                        out_b = generate_with_post_guard(
-                            prompt, model, tokenizer,
-                            max_tokens=max_tokens, threshold=mt,
-                            use_chat_template=True, enable_retrieval_fallback=False,
-                            verify_first=True,
-                            external_selection=getattr(args, "external_selection", False),
-                            verify_votes=vv, verify_no_threshold=getattr(args, "verify_no_threshold", 1),
-                            verify_high_conf_bypass=bc,
-                            math_bypass_conf=getattr(args, "math_bypass_conf", 0.80),
-                            factual_uncertain_ratio_trigger=getattr(args, "factual_uncertain_ratio_trigger", 0.50),
-                            enable_internal_self_correct=False, internal_max_rounds=1,
-                            internal_target_uncertain_ratio=0.45, internal_memory_max_tokens=80,
-                            internal_enable_parametric_memory=False,
-                        )
-                        text_a = (out_a.get("safe_output") or out_a.get("text") or "")[:30]
-                        text_b = (out_b.get("safe_output") or out_b.get("text") or "")[:30]
-                        if text_a != text_b:
-                            consistent = False
-                            break
-
-                verify_pct = (verify_fired / len(TEST_PROMPTS)) * 100
-                consistent_str = "✅ PASS" if consistent else "❌ FAIL"
-
-                entry = {
-                    "meta_threshold": mt,
-                    "verify_high_conf_bypass": bc,
-                    "verify_votes": vv,
-                    "latency_per_answer_s": round(latency, 3),
-                    "verify_fire_pct": round(verify_pct, 1),
-                    "consistent": consistent,
-                }
-                results.append(entry)
-
-                # Star = Pareto candidate (consistent + fastest so far among consistent)
-                consistent_results = [r for r in results if r["consistent"]]
-                best_latency = min((r["latency_per_answer_s"] for r in consistent_results), default=float("inf"))
-                star = " ◀ BEST" if consistent and latency <= best_latency else ""
-
-                print(f"  {mt:>7.2f} {bc:>7.2f} {vv:>6d} {latency:>9.2f}s {verify_pct:>7.0f}%  {consistent_str}{star}")
-
-    # ── Summary ──────────────────────────────────────────────────
-    print(f"\n  {'═'*65}")
-    consistent_results = [r for r in results if r["consistent"]]
-    if consistent_results:
-        best = min(consistent_results, key=lambda r: r["latency_per_answer_s"])
-        print(f"\n  ★  OPTIMAL POINT (fastest consistent config):")
-        print(f"     --meta-threshold {best['meta_threshold']:.2f}")
-        print(f"     --verify-high-conf-bypass {best['verify_high_conf_bypass']:.2f}")
-        print(f"     --verify-votes {best['verify_votes']}")
-        print(f"     Latency: {best['latency_per_answer_s']:.2f}s/answer | Verify fires: {best['verify_fire_pct']:.0f}% of queries")
-
-        # Compare to strictest config as baseline
-        strictest = max(results, key=lambda r: r["latency_per_answer_s"])
-        tax_saved = ((strictest["latency_per_answer_s"] - best["latency_per_answer_s"])
-                     / max(strictest["latency_per_answer_s"], 0.001)) * 100
-        print(f"     Safety Tax reduction vs max-strict: {tax_saved:.0f}%")
-    else:
-        print("\n  ⚠  No fully consistent configuration found — model needs retrieval fallback.")
-
-    print(f"  {'═'*65}\n")
-
-    with open("hydrusopt_threshold_sweep.json", "w") as f:
-        json.dump({"sweep": results}, f, indent=2)
-    print("  💾 Sweep results saved to hydrusopt_threshold_sweep.json")
-
-    return {"sweep": results, "best": best if consistent_results else None}
 
 
 def benchmark_standard(
@@ -3755,329 +3538,35 @@ def visualise_results(records: list, out_path: str = "hydrusopt_performance.png"
     print(f"  ✓ Chart saved → {out_path}")
 
 
-def _slugify_prompt(prompt: str, max_len: int = 80) -> str:
-    base = (prompt or "prompt").strip().lower()
-    base = re.sub(r"[^a-z0-9]+", "_", base).strip("_")
-    if not base:
-        base = "prompt"
-    return base[:max_len]
-
-
-def _append_csv_row(csv_path: str, fieldnames: List[str], row: Dict[str, Any]) -> None:
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-    exists = os.path.exists(csv_path)
-    with open(csv_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if not exists:
-            writer.writeheader()
-        writer.writerow(row)
-
-
-def _mean(values: List[float]) -> float:
-    if not values:
-        return 0.0
-    return float(sum(values) / max(len(values), 1))
-
-
-def _summarise_consistency_runs(runs: List[Dict[str, Any]]) -> Dict[str, float]:
-    if not runs:
-        return {
-            "consistent": 0.0,
-            "mean_entropy": 1.0,
-            "retrieved_rate": 0.0,
-            "fallback_rate": 0.0,
-            "avg_text_len": 0.0,
-            "accuracy_proxy": 0.0,
-        }
-
-    texts = [str(r.get("text", "")) for r in runs]
-    entropies = [float(r.get("entropy", 1.0)) for r in runs]
-    consistent = 1.0 if len(texts) >= 2 and texts[0][:30] == texts[1][:30] else 0.0
-    retrieved_rate = sum(1 for t in texts if t.startswith("[Retrieved]")) / max(len(texts), 1)
-    fallback_rate = sum(1 for t in texts if "I am not confident enough to answer" in t) / max(len(texts), 1)
-    mean_entropy = _mean(entropies)
-    avg_text_len = _mean([float(len(t)) for t in texts])
-    # Proxy only (no ground-truth labels in generic benchmark mode).
-    accuracy_proxy = max(0.0, min(1.0, (1.0 - mean_entropy) * (0.5 + 0.5 * consistent)))
-
-    return {
-        "consistent": consistent,
-        "mean_entropy": mean_entropy,
-        "retrieved_rate": retrieved_rate,
-        "fallback_rate": fallback_rate,
-        "avg_text_len": avg_text_len,
-        "accuracy_proxy": accuracy_proxy,
-    }
-
-
-def update_global_benchmark_trends(args, baseline: dict, linearised_only: dict, full_stack: dict) -> None:
-    """Append global speed benchmark row and refresh trend chart."""
-    trends_dir = os.path.join("benchmark_history")
-    csv_path = os.path.join(trends_dir, "speed_trends.csv")
-    chart_path = os.path.join(trends_dir, "speed_trends.png")
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-    baseline_tok = float(baseline.get("avg_tok_per_sec") or 0.0)
-    linear_tok = float(linearised_only.get("avg_tok_per_sec") or 0.0)
-    hydrus_tok = float(full_stack.get("avg_tok_per_sec") or 0.0)
-    speedup = hydrus_tok / max(baseline_tok, 0.001)
-
-    fieldnames = [
-        "timestamp", "model", "profile", "guard_mode", "baseline_tok_per_sec",
-        "linearised_tok_per_sec", "hydrus_tok_per_sec", "speedup",
-        "avg_acceptance_rate", "enable_retrieval_fallback", "verify_first",
-    ]
-    row = {
-        "timestamp": ts,
-        "model": str(getattr(args, "model", "")),
-        "profile": str(getattr(args, "profile", "")),
-        "guard_mode": str(getattr(args, "guard_mode", "")),
-        "baseline_tok_per_sec": f"{baseline_tok:.4f}",
-        "linearised_tok_per_sec": f"{linear_tok:.4f}",
-        "hydrus_tok_per_sec": f"{hydrus_tok:.4f}",
-        "speedup": f"{speedup:.6f}",
-        "avg_acceptance_rate": f"{float(full_stack.get('avg_acceptance_rate', 0.0)):.6f}",
-        "enable_retrieval_fallback": int(bool(getattr(args, "enable_retrieval_fallback", False))),
-        "verify_first": int(bool(getattr(args, "verify_first", False))),
-    }
-    _append_csv_row(csv_path, fieldnames, row)
-
-    if not _HAS_CHART:
-        return
-
-    try:
-        df = pd.read_csv(csv_path)
-        if df.empty:
-            return
-        df["run"] = range(1, len(df) + 1)
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-        ax1.plot(df["run"], df["baseline_tok_per_sec"], label="Baseline tok/s", color="#7f8c8d", linewidth=2)
-        ax1.plot(df["run"], df["hydrus_tok_per_sec"], label="Hydrus tok/s", color="#1f77b4", linewidth=2)
-        ax1.set_ylabel("Tokens / sec")
-        ax1.grid(alpha=0.25)
-        ax1.legend(loc="upper left")
-
-        ax2.plot(df["run"], df["speedup"], label="Speedup", color="#2ca02c", linewidth=2)
-        ax2.axhline(1.0, color="#999999", linestyle="--", linewidth=1)
-        ax2.set_xlabel("Benchmark run")
-        ax2.set_ylabel("x speedup")
-        ax2.grid(alpha=0.25)
-        ax2.legend(loc="upper left")
-        fig.suptitle("HydrusOpt Speed Trends", fontsize=14)
-        plt.tight_layout()
-        plt.savefig(chart_path, dpi=200)
-        plt.close(fig)
-    except Exception:
-        pass
-
-
-def update_prompt_benchmark_trends(
-    prompt: str,
-    args,
-    runs: List[Dict[str, Any]],
-    baseline: dict,
-    linearised_only: dict,
-    full_stack: dict,
-) -> None:
-    """Append prompt-specific benchmark row and refresh prompt trend chart."""
-    prompt_slug = _slugify_prompt(prompt)
-    prompt_dir = os.path.join("benchmark_history", "prompts")
-    csv_path = os.path.join(prompt_dir, f"{prompt_slug}_trend.csv")
-    chart_path = os.path.join(prompt_dir, f"{prompt_slug}_trend.png")
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-    summary = _summarise_consistency_runs(runs)
-    baseline_tok = float(baseline.get("avg_tok_per_sec") or 0.0)
-    linear_tok = float(linearised_only.get("avg_tok_per_sec") or 0.0)
-    hydrus_tok = float(full_stack.get("avg_tok_per_sec") or 0.0)
-    speedup = hydrus_tok / max(baseline_tok, 0.001)
-
-    fieldnames = [
-        "timestamp", "prompt", "prompt_type", "model", "profile", "guard_mode",
-        "baseline_tok_per_sec", "linearised_tok_per_sec", "hydrus_tok_per_sec", "speedup",
-        "consistent", "mean_entropy", "retrieved_rate", "fallback_rate",
-        "avg_text_len", "accuracy_proxy",
-    ]
-    row = {
-        "timestamp": ts,
-        "prompt": prompt,
-        "prompt_type": classify_prompt_type(prompt),
-        "model": str(getattr(args, "model", "")),
-        "profile": str(getattr(args, "profile", "")),
-        "guard_mode": str(getattr(args, "guard_mode", "")),
-        "baseline_tok_per_sec": f"{baseline_tok:.4f}",
-        "linearised_tok_per_sec": f"{linear_tok:.4f}",
-        "hydrus_tok_per_sec": f"{hydrus_tok:.4f}",
-        "speedup": f"{speedup:.6f}",
-        "consistent": f"{summary['consistent']:.6f}",
-        "mean_entropy": f"{summary['mean_entropy']:.6f}",
-        "retrieved_rate": f"{summary['retrieved_rate']:.6f}",
-        "fallback_rate": f"{summary['fallback_rate']:.6f}",
-        "avg_text_len": f"{summary['avg_text_len']:.2f}",
-        "accuracy_proxy": f"{summary['accuracy_proxy']:.6f}",
-    }
-    _append_csv_row(csv_path, fieldnames, row)
-
-    if not _HAS_CHART:
-        return
-
-    try:
-        df = pd.read_csv(csv_path)
-        if df.empty:
-            return
-        df["run"] = range(1, len(df) + 1)
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-
-        ax1.plot(df["run"], df["baseline_tok_per_sec"], label="Baseline tok/s", color="#7f8c8d", linewidth=2)
-        ax1.plot(df["run"], df["hydrus_tok_per_sec"], label="Hydrus tok/s", color="#1f77b4", linewidth=2)
-        ax1.set_ylabel("Tokens / sec")
-        ax1.grid(alpha=0.25)
-        ax1.legend(loc="upper left")
-
-        ax2.plot(df["run"], df["accuracy_proxy"], label="Accuracy proxy", color="#2ca02c", linewidth=2)
-        ax2.plot(df["run"], df["consistent"], label="Consistency", color="#ff7f0e", linewidth=2)
-        ax2.plot(df["run"], df["retrieved_rate"], label="Retrieved rate", color="#9467bd", linewidth=2)
-        ax2.set_xlabel("Benchmark run")
-        ax2.set_ylabel("Quality proxy")
-        ax2.set_ylim(0.0, 1.05)
-        ax2.grid(alpha=0.25)
-        ax2.legend(loc="upper left")
-        fig.suptitle(f"Prompt Trend: {prompt_slug}", fontsize=14)
-        plt.tight_layout()
-        plt.savefig(chart_path, dpi=200)
-        plt.close(fig)
-    except Exception:
-        pass
-
-
-def print_final_report(baseline, linearised_only, full_stack, quant_map, layers_linearised,
-                        reliability_latency_per_answer_s: Optional[float] = None,
-                        baseline_latency_per_answer_s: Optional[float] = None,
-                        args: Optional[Any] = None):
-    """
-    Print the HydrusOpt benchmark report with two investor-facing modes:
-
-    • PERFORMANCE MODE  — raw inference speed (HydrusOpt vs vanilla baseline)
-    • RELIABILITY MODE  — latency per verified answer (all guard passes included)
-      Safety Tax = extra latency added by cognitive verification, as % of baseline answer time.
-    """
-
-    def speedup(a, b):
-        a_tok = a.get("avg_tok_per_sec")
-        b_tok = b.get("avg_tok_per_sec")
-        if a_tok is None or b_tok is None:
-            return None
-        return round(a_tok / max(b_tok, 0.1), 2)
-
-    def percent_delta(a, b) -> float:
-        if a is None or b is None:
-            return 0.0
-        return ((a - b) / max(b, 0.001)) * 100.0
-
-    baseline_tok = baseline["avg_tok_per_sec"]
-    perf_tok     = full_stack["avg_tok_per_sec"]
-    perf_pct     = percent_delta(perf_tok, baseline_tok)
-    perf_trend   = "quicker" if perf_pct > 0 else "slower" if perf_pct < 0 else "same speed"
-
-    # Baseline latency per answer: tokens_per_answer / baseline_tok_per_sec
-    # Use benchmark_max_tokens as a proxy for answer length (conservative — real answers are shorter)
-    avg_answer_tokens = full_stack.get("avg_tokens_per_run") or 80
-    # Prefer wall-clock measured baseline (same prompts, no guard) for apples-to-apples Safety Tax.
-    # Fall back to tok/s estimate only when no wall-clock baseline is available.
-    if baseline_latency_per_answer_s is not None:
-        baseline_latency = baseline_latency_per_answer_s
-    else:
-        baseline_latency  = avg_answer_tokens / max(baseline_tok or 0.1, 0.1)
-    raw_tax_pct       = 0.0
-    if reliability_latency_per_answer_s is not None:
-        rel_latency       = reliability_latency_per_answer_s
-        raw_tax_pct       = percent_delta(rel_latency, baseline_latency)
-        safety_tax_pct    = max(0.0, raw_tax_pct)
-        rel_latency_known = True
-    else:
-        rel_latency       = baseline_latency   # fallback: no data
-        safety_tax_pct    = 0.0
-        rel_latency_known = False
-
+def print_final_report(baseline, linearised_only, full_stack, quant_map, layers_linearised):
     print("\n" + "=" * 65)
-    print("  HYDRUSOPT — BENCHMARK REPORT")
+    print("  HYDRUSOPT — FINAL BENCHMARK REPORT")
     print("=" * 65)
 
-    # ── MODE 1: PERFORMANCE ───────────────────────────────────────
-    print("\n  ┌─────────────────────────────────────────────────────┐")
-    print("  │  MODE 1 · PERFORMANCE  (pure inference throughput)  │")
-    print("  └─────────────────────────────────────────────────────┘")
-    print(f"\n  {'Model':<22} {'Tokens/sec':>10}   {'vs Baseline':>18}")
-    print(f"  {'─'*54}")
-    baseline_tok_str = f"{baseline_tok:.1f}" if baseline_tok is not None else "n/a"
-    perf_tok_str     = f"{perf_tok:.1f}"     if perf_tok     is not None else "n/a"
-    perf_delta_str   = f"{perf_pct:+.1f}% ({perf_trend})" if perf_tok is not None else "— (skipped)"
-    print(f"  {'Baseline (vanilla)':<22} {baseline_tok_str:>18}   {'— (reference)':>18}")
-    print(f"  {'HydrusOpt (perf)':<22} {perf_tok_str:>18}   {perf_delta_str:>18}")
+    def speedup(a, b):
+        return round(a["avg_tok_per_sec"] / max(b["avg_tok_per_sec"], 0.1), 2)
 
-    # ── MODE 2: RELIABILITY ───────────────────────────────────────
-    print("\n  ┌─────────────────────────────────────────────────────┐")
-    print("  │  MODE 2 · RELIABILITY  (wall-clock sec/answer,     │")
-    print("  │  same prompts · vanilla vs full guard stack)        │")
-    print("  └─────────────────────────────────────────────────────┘")
-    print(f"\n  {'Model':<26} {'Sec/answer':>10}   {'Overhead':>14}")
-    print(f"  {'─'*54}")
-    # Show "n/a" only when neither wall-clock nor tok/s baseline is available
-    baseline_lat_str = f"{baseline_latency:.2f}s" if (baseline_latency_per_answer_s is not None or baseline_tok is not None) else "n/a"
-    print(f"  {'Baseline (no guard)':<26} {baseline_lat_str:>10}   {'— (reference)':>14}")
-    
-    label = "HydrusOpt (full guard)"
-    if args is not None and getattr(args, "enable_hcl", False):
-        if getattr(args, "hcl_lightweight", False):
-            label = "HydrusOpt (HCL lightweight)"
-        else:
-            label = "HydrusOpt (HCL)"
+    def percent_delta(a_tok: float, b_tok: float) -> float:
+        return ((a_tok - b_tok) / max(b_tok, 0.001)) * 100.0
 
-    if rel_latency_known:
-        if raw_tax_pct < 0:
-            overhead_label = f"{-raw_tax_pct:.0f}% faster"
-        else:
-            overhead_label = f"+{safety_tax_pct:.0f}% latency"
-        print(f"  {label:<26} {rel_latency:>10.2f}s  {overhead_label:>14}")
-    else:
-        print(f"  {label:<26} {'n/a':>10}   {'run benchmark':>14}")
+    baseline_tok = baseline["avg_tok_per_sec"]
+    hydrus_tok = full_stack["avg_tok_per_sec"]
+    hydrus_pct = percent_delta(hydrus_tok, baseline_tok)
+    hydrus_trend = "quicker" if hydrus_pct > 0 else "slower" if hydrus_pct < 0 else "same speed"
 
-    # ── SAFETY TAX ────────────────────────────────────────────────
-    print("\n  ┌─────────────────────────────────────────────────────┐")
-    print("  │  SAFETY TAX  (cost of hallucination-proof output)   │")
-    print("  └─────────────────────────────────────────────────────┘")
-    if rel_latency_known:
-        if raw_tax_pct < 0:
-            verdict = (
-                f"  HydrusOpt delivers verified, hallucination-proof output with NO Safety Tax.\n"
-                f"  Full guard stack is {-raw_tax_pct:.0f}% faster than vanilla on the same prompts."
-            )
-        elif safety_tax_pct <= 15:
-            verdict = (
-                f"  HydrusOpt delivers verified, hallucination-proof output\n"
-                f"  for a Safety Tax of only {safety_tax_pct:.0f}% extra latency per answer."
-            )
-        else:
-            verify_votes = 3  # default
-            verdict = (
-                f"  Reliability mode adds {safety_tax_pct:.0f}% latency per answer\n"
-                f"  ({verify_votes} consensus verification passes included).\n"
-                f"  Use --verify-votes 1 or --verify-high-conf-bypass 0.7 to reduce overhead."
-            )
-    else:
-        verdict = "  Run the full benchmark (without --skip-linearise) to compute Safety Tax."
-    print(f"\n{verdict}")
+    print(f"\n  {'Model':<18} {'Tokens/sec':>12} {'Delta vs Baseline':>26}")
+    print(f"  {'-'*54}")
+    print(f"  {'Baseline':<18} {baseline_tok:>12.1f} {'0.0% (baseline)':>26}")
+    print(f"  {'HydrusOpt':<18} {hydrus_tok:>12.1f} {f'{hydrus_pct:+.1f}% ({hydrus_trend})':>26}")
 
-    # ── INTERNALS ─────────────────────────────────────────────────
-    _lin_tok = linearised_only.get("avg_tok_per_sec")
-    if _lin_tok is not None:
-        print(f"\n  Linearisation-only reference : {_lin_tok:.1f} tok/s ({speedup(linearised_only, baseline):.2f}x)")
-    else:
-        print(f"\n  Linearisation-only reference : n/a (--no-bench)")
+    print(f"\n  Linearisation-only reference: {linearised_only['avg_tok_per_sec']:.1f} tok/s ({speedup(linearised_only, baseline):.2f}x)")
+
     if full_stack.get("avg_acceptance_rate"):
-        print(f"  Speculative acceptance rate  : {full_stack['avg_acceptance_rate']*100:.1f}%")
-    print(f"  Layers linearised            : {len(layers_linearised)}")
-    print(f"  Quantisation map             : {len(quant_map)} layers quantised")
+        print(f"\n  Speculative decoding acceptance rate: {full_stack['avg_acceptance_rate']*100:.1f}%")
+        print(f"  (higher = draft model agrees with main model more often)")
+
+    print(f"\n  Layers linearised: {len(layers_linearised)}")
+    print(f"  Quantisation map: {len(quant_map)} layers quantised")
 
     if baseline["errors"] or full_stack["errors"]:
         print(f"\n  ⚠ Errors encountered:")
@@ -4085,7 +3574,7 @@ def print_final_report(baseline, linearised_only, full_stack, quant_map, layers_
             print(f"    - {e}")
     print("=" * 65)
 
-    # ── JSON report ───────────────────────────────────────────────
+    # Save report
     report = {
         "baseline": baseline,
         "linearised_only": linearised_only,
@@ -4094,31 +3583,6 @@ def print_final_report(baseline, linearised_only, full_stack, quant_map, layers_
         "speedup_full_stack": speedup(full_stack, baseline),
         "layers_linearised": layers_linearised,
         "quant_map": {str(k): v for k, v in quant_map.items()},
-        "investor_summary": {
-            "performance_mode": {
-                "label": "HydrusOpt (performance)",
-                "tok_per_sec": round(perf_tok, 2) if perf_tok is not None else None,
-                "delta_vs_baseline_pct": round(perf_pct, 2),
-            },
-            "reliability_mode": {
-                "label": "HydrusOpt (reliability)",
-                "baseline_latency_per_answer_s": round(baseline_latency, 3) if baseline_tok is not None else None,
-                "verified_latency_per_answer_s": round(rel_latency, 3) if rel_latency_known else None,
-                "safety_tax_pct": round(safety_tax_pct, 1) if rel_latency_known else None,
-            },
-            "safety_tax_pct": round(safety_tax_pct, 1) if rel_latency_known else None,
-            "safety_tax_narrative": (
-                (
-                    f"HydrusOpt delivers verified output with no safety tax "
-                    f"(full guard stack is {-raw_tax_pct:.0f}% faster than vanilla on the same prompts)."
-                    if raw_tax_pct < 0 else
-                    f"HydrusOpt adds {safety_tax_pct:.0f}% latency per answer for "
-                    f"hallucination-proof cognitive verification."
-                )
-                if rel_latency_known else
-                "Run full benchmark to compute Safety Tax."
-            ),
-        },
     }
     with open("hydrusopt_report.json", "w") as f:
         json.dump(report, f, indent=2)
@@ -4151,324 +3615,127 @@ def print_cybernetic_report(c_report: Dict[str, Any]) -> None:
     print("=" * 65)
 
 
-def _is_flag_explicit(argv_flags: set, flag_name: str) -> bool:
-    """Return True when a CLI flag was explicitly provided by the user."""
-    return flag_name in argv_flags
-
-
-def apply_profile_defaults(args, argv_flags: set) -> None:
-    """
-    Apply high-level profile presets.
-    Advanced flags can still override profile values when explicitly provided.
-    """
-    profile_map = {
-        "fast": {
-            "speed_preset": "max",
-            "skip_linearise": True,
-            "skip_quant": False,
-            "enable_metacognition": False,
-            "enable_selfcorrect": False,
-            "guard_mode": "post",
-            "enable_retrieval_fallback": False,
-            "verify_first": False,
-            "external_selection": False,
-            "enable_cybernetic_monitor": False,
-            "benchmark_batch_size": 1,
-            "benchmark_max_tokens": 40,
-            "benchmark_warmup_tokens": 8,
-            "benchmark_warmup_iters": 1,
-            "factual_uncertain_ratio_trigger": 0.60,
-            "enable_internal_self_correct": False,
-        },
-        "safe": {
-            "speed_preset": "balanced",
-            "skip_linearise": False,
-            "skip_quant": False,
-            "enable_metacognition": True,
-            "enable_selfcorrect": True,
-            "guard_mode": "token",
-            "enable_retrieval_fallback": True,
-            "verify_first": True,
-            "external_selection": True,
-            "enable_cybernetic_monitor": False,
-            "benchmark_batch_size": 1,
-            "benchmark_max_tokens": 40,
-            "benchmark_warmup_tokens": 8,
-            "benchmark_warmup_iters": 1,
-            "factual_uncertain_ratio_trigger": 0.50,
-            "enable_internal_self_correct": True,
-        },
-        "eval": {
-            "speed_preset": "balanced",
-            "skip_linearise": True,
-            "skip_quant": False,
-            "enable_metacognition": True,
-            "enable_selfcorrect": False,
-            "guard_mode": "token",
-            "enable_retrieval_fallback": True,
-            "verify_first": True,
-            "external_selection": True,
-            "enable_cybernetic_monitor": True,
-            "benchmark_batch_size": 2,
-            "benchmark_max_tokens": 40,
-            "benchmark_warmup_tokens": 8,
-            "benchmark_warmup_iters": 1,
-            "factual_uncertain_ratio_trigger": 0.45,
-            "enable_internal_self_correct": True,
-        },
-    }
-
-    flag_to_attr = {
-        "--speed-preset": "speed_preset",
-        "--skip-linearise": "skip_linearise",
-        "--skip-quant": "skip_quant",
-        "--enable-metacognition": "enable_metacognition",
-        "--enable-selfcorrect": "enable_selfcorrect",
-        "--guard-mode": "guard_mode",
-        "--enable-retrieval-fallback": "enable_retrieval_fallback",
-        "--verify-first": "verify_first",
-        "--external-selection": "external_selection",
-        "--enable-cybernetic-monitor": "enable_cybernetic_monitor",
-        "--benchmark-batch-size": "benchmark_batch_size",
-        "--benchmark-max-tokens": "benchmark_max_tokens",
-        "--benchmark-warmup-tokens": "benchmark_warmup_tokens",
-        "--benchmark-warmup-iters": "benchmark_warmup_iters",
-        "--factual-uncertain-ratio-trigger": "factual_uncertain_ratio_trigger",
-        "--enable-internal-self-correct": "enable_internal_self_correct",
-    }
-
-    selected = profile_map[args.profile]
-    for flag_name, attr_name in flag_to_attr.items():
-        if _is_flag_explicit(argv_flags, flag_name):
-            continue
-        setattr(args, attr_name, selected[attr_name])
-
-    # Helpful default for eval profile if user did not provide a calibration file.
-    if (
-        args.profile == "eval"
-        and not _is_flag_explicit(argv_flags, "--calibration-file")
-        and not args.calibration_file
-    ):
-        for candidate in ("calibration_tasks_v2.json", "calibration_tasks.json"):
-            if os.path.exists(candidate):
-                args.calibration_file = candidate
-                break
-
-
 # ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
 def main():
-    parser = argparse.ArgumentParser(
-        description=(
-            "HydrusOpt — Local LLM Safety & Benchmarking Layer\n"
-            "Runs inference through a configurable guard pipeline that tracks\n"
-            "confidence, detects hallucinations, and benchmarks throughput.\n\n"
-            "Quick-start examples:\n"
-            "  Prompt test (quiet, no GPU spike):\n"
-            "    python Hydrusopt_test.py --model Qwen/Qwen2.5-3B-Instruct \\\n"
-            "      --profile fast --skip-linearise --no-bench --no-retrieval \\\n"
-            "      --check-consistency \"Your question here\" --guard-mode post\n\n"
-            "  Full benchmark:\n"
-            "    python Hydrusopt_test.py --model Qwen/Qwen2.5-3B-Instruct \\\n"
-            "      --profile fast --no-retrieval \\\n"
-            "      --check-consistency \"Your question here\" --guard-mode post"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    # ── Model & profile ───────────────────────────────────────────────────────
-    g_model = parser.add_argument_group("Model & profile")
-    g_model.add_argument("--model", type=str, default="Qwen/Qwen2-1.5B-Instruct",
-                         help="HuggingFace model ID or local path  (default: Qwen/Qwen2-1.5B-Instruct)")
-    g_model.add_argument("--profile", type=str, choices=["fast", "safe", "eval"], default="safe",
-                         help="High-level preset — fast: low latency, no guards  |  safe: full guard pipeline  |  eval: calibration/verification mode")
-    g_model.add_argument("--cache-dir", type=str, default=r"D:\HydrusOPT\models",
-                         help="Directory to cache downloaded model weights  (default: D:\\HydrusOPT\\models)")
-    g_model.add_argument("--save", action="store_true",
-                         help="Save the optimised model to disk after the run")
-
-    # ── Speed & compilation ───────────────────────────────────────────────────
-    g_speed = parser.add_argument_group("Speed & compilation")
-    g_speed.add_argument("--speed-preset", type=str, choices=["balanced", "max"], default="max",
-                         help="max: skip slow paths + enable CUDA knobs  |  balanced: safer defaults  (default: max)")
-    g_speed.add_argument("--skip-linearise", action="store_true",
-                         help="Skip attention-layer linearisation (faster startup, no accuracy change for most prompts)")
-    g_speed.add_argument("--linearise_ratio", type=float, default=0.5,
-                         help="Fraction of attention layers to linearise when linearisation is enabled  (default: 0.5)")
-    g_speed.add_argument("--disable-compile", action="store_true",
-                         help="Disable torch.compile even when speed-preset=max")
-    g_speed.add_argument("--compile-mode", type=str,
-                         choices=["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
-                         default="max-autotune",
-                         help="torch.compile backend mode  (default: max-autotune)")
-
-    # ── Quantisation ─────────────────────────────────────────────────────────
-    g_quant = parser.add_argument_group("Quantisation")
-    g_quant.add_argument("--quant_bits", type=int, default=4, choices=[4, 8],
-                         help="Quantisation precision: 4-bit (INT4) recommended for 6 GB GPUs  (default: 4)")
-    g_quant.add_argument("--skip-quant", action="store_true",
-                         help="Disable bitsandbytes quantisation — WARNING: causes OOM on 6 GB GPUs with 3B models")
-
-    # ── Benchmarking ─────────────────────────────────────────────────────────
-    g_bench = parser.add_argument_group("Benchmarking")
-    g_bench.add_argument("--no-bench", action="store_true",
-                         help="Skip all benchmark loops (baseline + compiled) — eliminates GPU spike and fan noise; tok/s shown as n/a")
-    g_bench.add_argument("--benchmark-batch-size", type=int, default=1,
-                         help="Micro-batch size for throughput benchmark passes  (default: 1)")
-    g_bench.add_argument("--benchmark-max-tokens", type=int, default=80,
-                         help="Tokens generated per timed benchmark pass  (default: 80)")
-    g_bench.add_argument("--benchmark-warmup-tokens", type=int, default=8,
-                         help="Tokens generated per warmup pass before timing starts  (default: 8)")
-    g_bench.add_argument("--benchmark-warmup-iters", type=int, default=1,
-                         help="Number of warmup passes before each timed batch  (default: 1)")
-    g_bench.add_argument("--benchmark-empty-cache", action="store_true",
-                         help="Call torch.cuda.empty_cache() between timed batches (debug only — usually slower)")
-    g_bench.add_argument("--benchmark-multi", action="store_true",
-                         help="Benchmark baseline vs HydrusOpt across all models in the MODELS list")
-    g_bench.add_argument("--stress-test", action="store_true",
-                         help="Run a built-in set of stress prompts (ambiguous, nonsense, contradiction, math)")
-    g_bench.add_argument("--visualise", action="store_true",
-                         help="Save a bar chart of multi-model results to hydrusopt_performance.png")
-
-    # ── Answer generation ────────────────────────────────────────────────────
-    g_answer = parser.add_argument_group("Answer generation")
-    g_answer.add_argument("--answer-max-tokens", type=int, default=0,
-                          help="Max new tokens for answer generation  (0 = auto-adaptive per prompt type, up to 512)")
-    g_answer.add_argument("--check-consistency", type=str, default="",
-                          help="Prompt to run through the full guard pipeline and consistency check")
-
-    # ── Safety guard ─────────────────────────────────────────────────────────
-    g_guard = parser.add_argument_group("Safety guard")
-    g_guard.add_argument("--guard-mode", type=str, choices=["post", "token"], default="post",
-                         help="post: fast post-generation confidence check (recommended)  |  token: per-token metacognition (slower)")
-    g_guard.add_argument("--selfcorrect-threshold", type=float, default=0.30,
-                         help="Uncertain-token ratio above which hallucination guards fire  (default: 0.30)")
-    g_guard.add_argument("--selfcorrect-samples", type=int, default=3,
-                         help="Number of consistency drafts generated when guard fires  (default: 3)")
-    g_guard.add_argument("--enable-selfcorrect", action="store_true",
-                         help="Enable the hallucination guard self-correction loop")
-    g_guard.add_argument("--factual-uncertain-ratio-trigger", type=float, default=0.50,
-                         help="Uncertainty ratio above which factual prompts are forced to safe fallback  (default: 0.50)")
-    g_guard.add_argument("--kv-prune-threshold", type=float, default=0.15,
-                         help="Entropy threshold below which KV-cache tokens are evicted  (default: 0.15)")
-
-    # ── Retrieval fallback ────────────────────────────────────────────────────
-    g_retrieval = parser.add_argument_group("Retrieval fallback")
-    g_retrieval.add_argument("--enable-retrieval-fallback", action="store_true",
-                             help="When the guard cannot produce a reliable answer, fetch a Wikipedia summary")
-    g_retrieval.add_argument("--no-retrieval", action="store_true",
-                             help="Force offline mode — disable Wikipedia retrieval even when the profile enables it")
-
-    # ── Verify-first gate ────────────────────────────────────────────────────
-    g_verify = parser.add_argument_group("Verify-first gate")
-    g_verify.add_argument("--verify-first", action="store_true",
-                          help="Run a consensus verification gate before allowing any corrective action")
-    g_verify.add_argument("--verify-votes", type=int, default=3,
-                          help="Number of verifier votes cast by the consensus gate  (default: 3)")
-    g_verify.add_argument("--verify-no-threshold", type=int, default=2,
-                          help="Minimum NO votes needed to block an answer  (default: 2)")
-    g_verify.add_argument("--verify-high-conf-bypass", type=float, default=0.90,
-                          help="Skip the verify gate when avg confidence is above this value  (default: 0.90)")
-    g_verify.add_argument("--math-bypass-conf", type=float, default=0.85,
-                          help="Skip the verify gate for numeric/math answers above this confidence  (default: 0.85)")
-    g_verify.add_argument("--external-selection", action="store_true",
-                          help="Use a fresh stateless evaluator prompt for each verification vote")
-
-    # ── Metacognition ─────────────────────────────────────────────────────────
-    g_meta = parser.add_argument_group("Metacognition")
-    g_meta.add_argument("--enable-metacognition", action="store_true",
-                        help="Enable the Metacognition Plugin (per-token confidence scoring + recovery)")
-    g_meta.add_argument("--meta-threshold", type=float, default=0.75,
-                        help="Confidence threshold below which token-level recovery is triggered  (default: 0.75)")
-    g_meta.add_argument("--meta-escalate", type=float, default=0.50,
-                        help="Confidence threshold below which human escalation is logged  (default: 0.50)")
-
-    # ── Internal self-correction ──────────────────────────────────────────────
-    g_isc = parser.add_argument_group("Internal self-correction")
-    g_isc.add_argument("--enable-internal-self-correct", action="store_true",
-                       help="Enable bounded internal self-correction (stateless verify + parametric memory)")
-    g_isc.add_argument("--internal-max-rounds", type=int, default=2,
-                       help="Maximum refinement rounds per answer  (default: 2)")
-    g_isc.add_argument("--internal-target-uncertain-ratio", type=float, default=0.45,
-                       help="Stop refinement when uncertainty ratio falls below this value  (default: 0.45)")
-    g_isc.add_argument("--internal-memory-max-tokens", type=int, default=80,
-                       help="Token budget for the parametric-memory verbalization block  (default: 80)")
-    g_isc.add_argument("--disable-internal-parametric-memory", action="store_true",
-                       help="Disable memory verbalization inside internal self-correction")
-
-    # ── Cybernetic monitor ────────────────────────────────────────────────────
-    g_cyber = parser.add_argument_group("Cybernetic monitor")
-    g_cyber.add_argument("--enable-cybernetic-monitor", action="store_true",
-                         help="Track EIR/ECR self-correction stability across a calibration set")
-    g_cyber.add_argument("--calibration-file", type=str, default="",
-                         help="JSON file with [{prompt, answer}] pairs for EIR/ECR calibration")
-    g_cyber.add_argument("--save-monitor", type=str, default="",
-                         help="Path to save the cybernetic monitor report as JSON")
-    g_cyber.add_argument("--tti-delta-threshold", type=float, default=0.002,
-                         help="Uncertainty saturation threshold for thinking-time intervention  (default: 0.002)")
-    g_cyber.add_argument("--tti-patience", type=int, default=4,
-                         help="Consecutive low-delta tokens before truncating over-thinking  (default: 4)")
-
-    # ── Threshold tuning ──────────────────────────────────────────────────────
-    g_tune = parser.add_argument_group("Threshold tuning")
-    g_tune.add_argument("--auto-tune-verify", action="store_true",
+    parser = argparse.ArgumentParser(description="HydrusOpt — Local LLM Safety Layer")
+    parser.add_argument("--model", type=str, default="Qwen/Qwen2-1.5B-Instruct",
+                        help="HuggingFace model ID (default: Qwen/Qwen2-1.5B-Instruct)")
+    parser.add_argument("--linearise_ratio", type=float, default=0.5,
+                        help="Fraction of attention layers to linearise (default: 0.5)")
+    parser.add_argument("--quant_bits", type=int, default=4, choices=[4, 8],
+                        help="Target quantisation bits for robust layers (default: 4)")
+    parser.add_argument("--speed-preset", type=str, choices=["balanced", "max"], default="max",
+                        help="Speed profile: max skips slow components and enables low-level runtime knobs")
+    parser.add_argument("--benchmark-batch-size", type=int, default=1,
+                        help="Micro-batch size for throughput benchmarking (default: 1)")
+    parser.add_argument("--benchmark-max-tokens", type=int, default=80,
+                        help="Generated tokens per benchmark decode pass (default: 80)")
+    parser.add_argument("--benchmark-warmup-tokens", type=int, default=8,
+                        help="Generated tokens per warmup pass before timing (default: 8)")
+    parser.add_argument("--benchmark-warmup-iters", type=int, default=1,
+                        help="Number of warmup generate passes before each timed batch (default: 1)")
+    parser.add_argument("--benchmark-empty-cache", action="store_true",
+                        help="Force torch.cuda.empty_cache() between timed batches (debug only; usually slower)")
+    parser.add_argument("--disable-compile", action="store_true",
+                        help="Disable torch.compile even in max speed preset")
+    parser.add_argument("--compile-mode", type=str,
+                        choices=["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+                        default="max-autotune",
+                        help="torch.compile mode (default: max-autotune)")
+    parser.add_argument("--skip-linearise", action="store_true")
+    parser.add_argument("--skip-quant", action="store_true")
+    parser.add_argument("--skip-speculative", action="store_true",
+                        help="Deprecated: speculative decoding is disabled in active pipeline")
+    parser.add_argument("--enable-speculative", action="store_true",
+                        help="Deprecated: ignored (speculative decoding is disabled)")
+    parser.add_argument("--cache-dir", type=str, default=r"D:\HydrusOPT\models",
+                        help="Directory to cache downloaded models (default: D:\\HydrusOPT\\models)")
+    parser.add_argument("--enable-metacognition", action="store_true",
+                        help="Enable Metacognition Plugin (confidence scoring + per-token recovery)")
+    parser.add_argument("--meta-threshold", type=float, default=0.75,
+                        help="Confidence threshold below which recovery is triggered (default: 0.75)")
+    parser.add_argument("--meta-escalate", type=float, default=0.50,
+                        help="Confidence threshold below which human escalation is logged (default: 0.50)")
+    parser.add_argument("--early-exit-threshold", type=float, default=0.99,
+                        help="Deprecated: retained for backward compatibility")
+    parser.add_argument("--enable-early-exit", action="store_true",
+                        help="Deprecated: ignored (MEEV early-exit disabled)")
+    parser.add_argument("--kv-prune-threshold", type=float, default=0.15,
+                        help="Entropy threshold below which KV tokens are evicted (default: 0.15)")
+    parser.add_argument("--enable-selfcorrect", action="store_true",
+                        help="Enable Hallucination Guards (self-correction loop + semantic consistency)")
+    parser.add_argument("--selfcorrect-samples", type=int, default=3,
+                        help="Number of consistency drafts to generate (default: 3)")
+    parser.add_argument("--selfcorrect-threshold", type=float, default=0.30,
+                        help="Uncertain-token ratio above which guards fire (default: 0.30)")
+    parser.add_argument("--save", action="store_true", help="Save optimised model to disk")
+    # ── Multi-model / stress / visualisation ──
+    parser.add_argument("--benchmark-multi", action="store_true",
+                        help="Benchmark Baseline vs HydrusOpt across multiple models (see MODELS list)")
+    parser.add_argument("--stress-test", action="store_true",
+                        help="Run stress prompts (ambiguous, nonsense, contradiction, math)")
+    parser.add_argument("--visualise", action="store_true",
+                        help="Save a bar chart of multi-model results to hydrusopt_performance.png")
+    parser.add_argument("--check-consistency", type=str, default="",
+                        help="Run check_truth_consistency() on a custom prompt")
+    parser.add_argument("--enable-retrieval-fallback", action="store_true",
+                        help="When safety guard blocks an answer, fetch a factual summary from Wikipedia")
+    parser.add_argument("--guard-mode", type=str, choices=["post", "token"], default="post",
+                        help="Safety guard mode: post=fast post-generation checks, token=per-token metacognition")
+    parser.add_argument("--verify-first", action="store_true",
+                        help="Run verify-first gate before allowing corrective actions")
+    parser.add_argument("--external-selection", action="store_true",
+                        help="Use a fresh stateless evaluator prompt for verification")
+    parser.add_argument("--enable-cybernetic-monitor", action="store_true",
+                        help="Track EIR/ECR self-correction stability on a calibration set")
+    parser.add_argument("--calibration-file", type=str, default="",
+                        help="JSON file with [{prompt, answer}] for EIR/ECR calibration")
+    parser.add_argument("--tti-delta-threshold", type=float, default=0.002,
+                        help="Token-level uncertainty saturation threshold for thinking intervention")
+    parser.add_argument("--tti-patience", type=int, default=4,
+                        help="Consecutive low-delta tokens before truncating over-thinking")
+    parser.add_argument("--save-monitor", type=str, default="",
+                        help="Optional path to save cybernetic monitor report as JSON")
+    parser.add_argument("--verify-votes", type=int, default=3,
+                        help="Number of verifier votes for verify-first consensus gate (default: 3)")
+    parser.add_argument("--verify-no-threshold", type=int, default=2,
+                        help="Minimum NO votes required to block (default: 2)")
+    parser.add_argument("--verify-high-conf-bypass", type=float, default=0.90,
+                        help="Bypass verify gate when avg confidence exceeds this value")
+    parser.add_argument("--math-bypass-conf", type=float, default=0.85,
+                        help="Bypass verify gate for numeric math answers above this confidence")
+    parser.add_argument("--auto-tune-verify", action="store_true",
                         help="Auto-tune verify gate thresholds using EIR/ECR on calibration tasks")
-    g_tune.add_argument("--auto-tune-bypass-grid", type=str, default="0.85,0.90,0.95",
-                        help="Comma-separated search grid for --verify-high-conf-bypass  (default: 0.85,0.90,0.95)")
-    g_tune.add_argument("--auto-tune-no-threshold-grid", type=str, default="1,2,3",
-                        help="Comma-separated search grid for --verify-no-threshold  (default: 1,2,3)")
-    g_tune.add_argument("--auto-tune-math-bypass-grid", type=str, default="0.80,0.85,0.90",
-                        help="Comma-separated search grid for --math-bypass-conf  (default: 0.80,0.85,0.90)")
-    g_tune.add_argument("--threshold-sweep", action="store_true",
-                        help="Grid-search meta-threshold × bypass-conf × verify-votes to find the optimal Safety Tax")
-    g_tune.add_argument("--sweep-meta-grid", type=str, default="0.50,0.65,0.75,0.85,0.95",
-                        help="Comma-separated meta-threshold values for --threshold-sweep")
-    g_tune.add_argument("--sweep-bypass-grid", type=str, default="0.60,0.70,0.80,0.90",
-                        help="Comma-separated verify_high_conf_bypass values for --threshold-sweep")
-    g_tune.add_argument("--sweep-votes-grid", type=str, default="1,3",
-                        help="Comma-separated verify_votes values for --threshold-sweep")
-
-    # ── Hydrus Cognitive Layer (HCL) ─────────────────────────────────────────
-    g_hcl = parser.add_argument_group("Hydrus Cognitive Layer (HCL)")
-    g_hcl.add_argument("--enable-hcl", action="store_true",
-                       help="Enable Hydrus Cognitive Layer offline memory middleware")
-    g_hcl.add_argument("--hcl-mode", type=str, choices=["fast", "balanced", "safe", "eval", "persistent"], default="balanced",
-                       help="Mode for HCL (default: balanced)")
-    g_hcl.add_argument("--hcl-user", type=str, default="default_user",
-                       help="User profile ID for HCL persistent memory (default: default_user)")
-    g_hcl.add_argument("--insecure-dev-mode", action="store_true",
-                       help="Bypass missing HCL_PROFILE_KEY env var check with a development key")
-    g_hcl.add_argument("--hcl-lightweight", action="store_true",
-                       help="Run HCL in lightweight mode (1-pass verification, exit-only profile saving, disabled self-correct)")
-    g_hcl.add_argument("--profile-timing", action="store_true",
-                       help="Print execution latency breakdown for cognitive/memory layers")
-
-    # ── Deprecated ───────────────────────────────────────────────────────────
-    g_dep = parser.add_argument_group("Deprecated (ignored)")
-    g_dep.add_argument("--skip-speculative", action="store_true",
-                       help="No-op — speculative decoding is disabled in the active pipeline")
-    g_dep.add_argument("--enable-speculative", action="store_true",
-                       help="No-op — speculative decoding is disabled in the active pipeline")
-    g_dep.add_argument("--early-exit-threshold", type=float, default=0.99,
-                       help="No-op — retained for script compatibility")
-    g_dep.add_argument("--enable-early-exit", action="store_true",
-                       help="No-op — MEEV early-exit is disabled")
-
+    parser.add_argument("--auto-tune-bypass-grid", type=str, default="0.85,0.90,0.95",
+                        help="Comma-separated grid for verify_high_conf_bypass")
+    parser.add_argument("--auto-tune-no-threshold-grid", type=str, default="1,2,3",
+                        help="Comma-separated grid for verify_no_threshold")
+    parser.add_argument("--auto-tune-math-bypass-grid", type=str, default="0.80,0.85,0.90",
+                        help="Comma-separated grid for math_bypass_conf")
+    # ── Skills + Artifacts ──
+    parser.add_argument("--chat", action="store_true",
+                        help="Start interactive chat loop with skill-calling and artifact rendering")
+    parser.add_argument("--enable-skills", action="store_true",
+                        help="Enable skill/tool-calling registry (auto-enabled with --chat)")
+    parser.add_argument("--artifacts-dir", type=str, default="artifacts",
+                        help="Directory to write rendered artifact HTML files (default: artifacts)")
+    parser.add_argument("--chat-max-tokens", type=int, default=200,
+                        help="Max new tokens per chat turn (default: 200)")
+    # ── Research mode ──
+    parser.add_argument("--research", action="store_true",
+                        help="Start research chat: grounds every answer in live academic sources + metacognition eval")
+    parser.add_argument("--research-sources", type=str, default="arxiv,semanticscholar",
+                        help="Comma-separated sources to query: arxiv, pubmed, semanticscholar (default: arxiv,semanticscholar)")
+    parser.add_argument("--research-max-results", type=int, default=3,
+                        help="Max results to fetch per source (default: 3)")
+    parser.add_argument("--research-no-eval", action="store_true",
+                        help="Skip the metacognition eval pass in research mode (faster, less safe)")
+    parser.add_argument("--research-threshold", type=float, default=0.72,
+                        help="Confidence threshold for metacognition eval in research mode (default: 0.72)")
     args = parser.parse_args()
-
-    argv_flags = {
-        token.split("=", 1)[0]
-        for token in sys.argv[1:]
-        if token.startswith("--")
-    }
-    apply_profile_defaults(args, argv_flags)
-
-    args.internal_enable_parametric_memory = not bool(args.disable_internal_parametric_memory)
-    args.internal_max_rounds = max(1, min(int(args.internal_max_rounds), 6))
-    args.internal_target_uncertain_ratio = max(0.0, min(float(args.internal_target_uncertain_ratio), 1.0))
-    args.internal_memory_max_tokens = max(16, min(int(args.internal_memory_max_tokens), 256))
 
     # Speculative decoding is hard-disabled in the active pipeline due repeated regressions.
     args.skip_speculative = True
@@ -4477,15 +3744,10 @@ def main():
     if args.enable_early_exit:
         print("\n  [INFO] --enable-early-exit is deprecated and ignored (MEEV disabled).")
     args.enable_early_exit = False
-    if getattr(args, "no_retrieval", False):
-        args.enable_retrieval_fallback = False
-    if args.enable_retrieval_fallback:
-        print("\n  [INFO] Retrieval fallback is ENABLED (Wikipedia).")
-    else:
-        print("\n  [INFO] Retrieval fallback is DISABLED (offline / parametric memory only).")
 
     # Max speed preset: disable known slow paths in this codebase.
     if args.speed_preset == "max":
+        args.skip_quant = True
         args.skip_linearise = True
 
     print(BANNER)
@@ -4505,7 +3767,6 @@ def main():
     configure_cuda_speed_knobs(device)
 
     cybernetic_report = None
-    consistency_runs: Optional[List[Dict[str, Any]]] = None
 
     # ── Multi-model benchmark (independent mode — does not need --model) ──
     if args.benchmark_multi:
@@ -4527,14 +3788,8 @@ def main():
         args.skip_quant = True
 
     print(f"\n  Model  : {args.model}")
-    print(f"  Profile: {args.profile}")
     print(f"  Speed preset: {args.speed_preset}")
     print(f"  Guard mode: {args.guard_mode}")
-    print(
-        "  Internal self-correct: "
-        f"{'ON' if args.enable_internal_self_correct else 'OFF'}"
-        f" (rounds={args.internal_max_rounds}, target_u={args.internal_target_uncertain_ratio:.2f})"
-    )
     print(f"  Techniques: "
           f"{'Linearisation ' if not args.skip_linearise else ''}"
             f"{'Quantisation ' if not args.skip_quant else ''}")
@@ -4586,23 +3841,53 @@ def main():
     param_count = sum(p.numel() for p in model.parameters()) / 1e9
     print(f"  ✓ Loaded — {param_count:.2f}B parameters\n")
 
-    # ── Baseline benchmark (uncompiled, no SWA — plain model reference) ──
-    if getattr(args, "no_bench", False):
-        baseline_results = {"avg_tok_per_sec": None, "errors": []}
-        print("  ⏱  Benchmark skipped (--no-bench)")
-    else:
-        print("  ⏱  Benchmarking baseline...")
-        baseline_results = benchmark_standard(
-            model,
-            tokenizer,
-            "Baseline",
-            batch_size=args.benchmark_batch_size,
-            max_new_tokens=args.benchmark_max_tokens,
-            warmup_new_tokens=args.benchmark_warmup_tokens,
-            warmup_iters=args.benchmark_warmup_iters,
-            empty_cache_between_batches=args.benchmark_empty_cache,
+    # ── Research mode — grounded retrieval + metacognition eval ──
+    if args.research:
+        sources = [s.strip() for s in args.research_sources.split(",") if s.strip()]
+        retriever = ResearchRetriever(
+            sources=sources,
+            max_results_per_source=args.research_max_results,
         )
-        print(f"     Baseline: {baseline_results['avg_tok_per_sec']} tok/s")
+        skill_registry = SkillRegistry()
+        artifact_renderer = ArtifactRenderer(output_dir=args.artifacts_dir)
+        research_chat_loop(
+            model, tokenizer,
+            retriever=retriever,
+            artifact_renderer=artifact_renderer,
+            skill_registry=skill_registry,
+            max_tokens=args.chat_max_tokens,
+            meta_threshold=args.research_threshold,
+            run_eval=not args.research_no_eval,
+        )
+        return
+
+    # ── Chat mode — launches interactive REPL, skips all benchmarking ──
+    if args.chat or args.enable_skills:
+        skill_registry = SkillRegistry()
+        artifact_renderer = ArtifactRenderer(output_dir=args.artifacts_dir)
+        if args.chat:
+            chat_loop(
+                model, tokenizer,
+                skill_registry, artifact_renderer,
+                max_new_tokens=args.chat_max_tokens,
+            )
+            return
+        # --enable-skills without --chat: just confirm it is wired and fall through
+        print("  [Skills] Registry active:", skill_registry.list_names())
+
+    # ── Baseline benchmark (uncompiled, no SWA — plain model reference) ──
+    print("  ⏱  Benchmarking baseline...")
+    baseline_results = benchmark_standard(
+        model,
+        tokenizer,
+        "Baseline",
+        batch_size=args.benchmark_batch_size,
+        max_new_tokens=args.benchmark_max_tokens,
+        warmup_new_tokens=args.benchmark_warmup_tokens,
+        warmup_iters=args.benchmark_warmup_iters,
+        empty_cache_between_batches=args.benchmark_empty_cache,
+    )
+    print(f"     Baseline: {baseline_results['avg_tok_per_sec']} tok/s")
 
     # ── Technique 1: Linearisation ──
     layers_linearised = []
@@ -4614,16 +3899,14 @@ def main():
     # graph breaks on every SWA forward call (new Python modules = new graph).
     # Compiling after linearisation lets max-autotune see the final SWA graph
     # and fuse masked_fill_ + attention kernels into a single Triton dispatch.
-    if compile_enabled and not getattr(args, "no_bench", False):
+    if compile_enabled:
         try:
             model = torch.compile(model, mode=args.compile_mode, fullgraph=False)
             print(f"  [SPEED] torch.compile enabled ({args.compile_mode} on final graph; eager fallback on backend errors)")
         except Exception as e:
             print(f"  [SPEED] torch.compile unavailable ({e})")
 
-    if getattr(args, "no_bench", False):
-        linearised_results = {"avg_tok_per_sec": None, "errors": []}
-    elif not args.skip_linearise:
+    if not args.skip_linearise:
         # Benchmark linearised + compiled together (the actual HydrusOpt runtime)
         print("\n  ⏱  Benchmarking after linearisation + compile...")
         linearised_results = benchmark_standard(
@@ -4680,25 +3963,7 @@ def main():
 
     # ── Plugin 4: Metacognition ──
     # ── Plugin 4: Metacognition (Unified HCIE) ──
-    if getattr(args, "enable_hcl", False):
-        from hcl import HCL, generate_with_hcl
-        print("\n  [HCL] RUNNING COGNITIVE LAYER MIDDLEWARE DEMO")
-        hcl_obj = HCL(
-            model, tokenizer,
-            mode=args.hcl_mode,
-            user_id=args.hcl_user,
-            insecure_dev_mode=args.insecure_dev_mode,
-            hcl_lightweight=getattr(args, "hcl_lightweight", False),
-            profile_timing=getattr(args, "profile_timing", False)
-        )
-        for prompt in TEST_PROMPTS[:2]:
-            output_text, stats = generate_with_hcl(prompt, model, tokenizer, hcl_obj, max_new_tokens=40)
-            print(f"\n  Prompt : \"{prompt}\"")
-            print(f"  Output : \"{output_text}\"")
-            print(f"  Stats  : {stats['total_steps']} steps, HMG memory nodes count: {stats['memory_nodes']}")
-        print("\n  ✓ HCL Cognitive Layer Middleware Demo complete.")
-
-    elif args.enable_metacognition:
+    if args.enable_metacognition:
         print("\n  [4/4] HYDRUS COGNITIVE INFERENCE ENGINE (HCIE)")
         print(f"        MAS   : Dynamic Sliding Window Attention (32 to 512 window)")
         print(f"        IT-KV : Info-Theoretic KV Pruning (entropy thresh < {args.kv_prune_threshold})")
@@ -4767,56 +4032,17 @@ def main():
                 external_selection=args.external_selection,
                 tti_delta_threshold=args.tti_delta_threshold,
                 tti_patience=args.tti_patience,
-                enable_internal_self_correct=args.enable_internal_self_correct,
-                internal_max_rounds=args.internal_max_rounds,
-                internal_target_uncertain_ratio=args.internal_target_uncertain_ratio,
-                internal_memory_max_tokens=args.internal_memory_max_tokens,
-                internal_enable_parametric_memory=args.internal_enable_parametric_memory,
             )
 
     # ── Consistency check on custom prompt ──
     if args.check_consistency:
-        _consistency_max_tokens = _adaptive_max_tokens(args.check_consistency, getattr(args, "answer_max_tokens", 0))
-        consistency_runs = check_truth_consistency(
+        check_truth_consistency(
             args.check_consistency,
             model,
             tokenizer,
-            samples=1 if getattr(args, "hcl_lightweight", False) else 2,
-            max_tokens=_consistency_max_tokens,
             threshold=args.meta_threshold,
             enable_retrieval_fallback=args.enable_retrieval_fallback,
             guard_mode=args.guard_mode,
-            verify_first=args.verify_first,
-            external_selection=args.external_selection,
-            verify_votes=1 if getattr(args, "hcl_lightweight", False) else args.verify_votes,
-            verify_no_threshold=args.verify_no_threshold,
-            verify_high_conf_bypass=args.verify_high_conf_bypass,
-            math_bypass_conf=args.math_bypass_conf,
-            factual_uncertain_ratio_trigger=args.factual_uncertain_ratio_trigger,
-            enable_internal_self_correct=False if getattr(args, "hcl_lightweight", False) else args.enable_internal_self_correct,
-            internal_max_rounds=args.internal_max_rounds,
-            internal_target_uncertain_ratio=args.internal_target_uncertain_ratio,
-            internal_memory_max_tokens=args.internal_memory_max_tokens,
-            internal_enable_parametric_memory=args.internal_enable_parametric_memory,
-            enable_hcl=getattr(args, "enable_hcl", False),
-            hcl_mode=getattr(args, "hcl_mode", "balanced"),
-            hcl_user=getattr(args, "hcl_user", "default_user"),
-            insecure_dev_mode=getattr(args, "insecure_dev_mode", False),
-            hcl_lightweight=getattr(args, "hcl_lightweight", False),
-            profile_timing=getattr(args, "profile_timing", False),
-        )
-
-    # ── Threshold sweep ──
-    if getattr(args, "threshold_sweep", False):
-        print("\n  [SWEEP] Running threshold sweep — this will take a while...")
-        run_threshold_sweep(
-            model=model,
-            tokenizer=tokenizer,
-            args=args,
-            meta_threshold_grid=_parse_float_grid(args.sweep_meta_grid, [0.50, 0.65, 0.75, 0.85, 0.95]),
-            bypass_conf_grid=_parse_float_grid(args.sweep_bypass_grid, [0.60, 0.70, 0.80, 0.90]),
-            verify_votes_grid=_parse_int_grid(args.sweep_votes_grid, [1, 3]),
-            max_tokens=args.benchmark_max_tokens,
         )
 
     # ── Cybernetic calibration pass (optional) ──
@@ -4877,108 +4103,8 @@ def main():
                         json.dump(payload, f, indent=2)
                     print(f"  [CYBERNETIC] monitor report saved to {args.save_monitor}")
 
-    # ── Reliability microbenchmark (guarded generation on TEST_PROMPTS) ──
-    # Both passes use identical TEST_PROMPTS so the comparison is wall-clock apples-to-apples.
-    # Safety Tax = (verified_latency - baseline_latency) / baseline_latency * 100%
-    baseline_latency_per_answer_s: Optional[float] = None
-    reliability_latency_per_answer_s: Optional[float] = None
-    try:
-        # Pass 1: vanilla baseline (no guard) — establishes the reference wall-clock latency
-        print("\n  [RELIABILITY] Timing vanilla baseline (no guard)...")
-        _base_t0 = time.perf_counter()
-        model.eval()
-        with torch.inference_mode():
-            for _rp in TEST_PROMPTS:
-                _rp_max_tokens = _adaptive_max_tokens(_rp, getattr(args, "answer_max_tokens", 0))
-                _generate_clean_text(_rp, model, tokenizer, max_tokens=_rp_max_tokens)
-        baseline_latency_per_answer_s = (time.perf_counter() - _base_t0) / len(TEST_PROMPTS)
-    except Exception:
-        pass
-
-    try:
-        # Pass 2: full guard/cognitive stack — what HydrusOpt actually delivers
-        print("\n  [RELIABILITY] Timing verified answer latency (full stack)...")
-        _rel_t0 = time.perf_counter()
-        model.eval()
-        if getattr(args, "enable_hcl", False):
-            from hcl import HCL, generate_with_hcl
-            hcl_obj = HCL(
-                model, tokenizer,
-                mode=args.hcl_mode,
-                user_id=args.hcl_user,
-                insecure_dev_mode=args.insecure_dev_mode,
-                hcl_lightweight=getattr(args, "hcl_lightweight", False),
-                profile_timing=getattr(args, "profile_timing", False)
-            )
-            for _rp in TEST_PROMPTS:
-                _rp_max_tokens = _adaptive_max_tokens(_rp, getattr(args, "answer_max_tokens", 0))
-                generate_with_hcl(_rp, model, tokenizer, hcl_obj, max_new_tokens=_rp_max_tokens)
-        else:
-            with torch.inference_mode():
-                for _rp in TEST_PROMPTS:
-                    _rp_max_tokens = _adaptive_max_tokens(_rp, getattr(args, "answer_max_tokens", 0))
-                    generate_with_post_guard(
-                        _rp,
-                        model,
-                        tokenizer,
-                        max_tokens=_rp_max_tokens,
-                        threshold=args.meta_threshold,
-                        use_chat_template=True,
-                        enable_retrieval_fallback=False,   # exclude network latency from timing
-                        verify_first=args.verify_first,
-                        external_selection=args.external_selection,
-                        verify_votes=args.verify_votes,
-                        verify_no_threshold=args.verify_no_threshold,
-                        verify_high_conf_bypass=args.verify_high_conf_bypass,
-                        math_bypass_conf=args.math_bypass_conf,
-                        factual_uncertain_ratio_trigger=args.factual_uncertain_ratio_trigger,
-                        enable_internal_self_correct=args.enable_internal_self_correct,
-                        internal_max_rounds=args.internal_max_rounds,
-                        internal_target_uncertain_ratio=args.internal_target_uncertain_ratio,
-                        internal_memory_max_tokens=args.internal_memory_max_tokens,
-                        internal_enable_parametric_memory=args.internal_enable_parametric_memory,
-                    )
-        _rel_elapsed = time.perf_counter() - _rel_t0
-        reliability_latency_per_answer_s = _rel_elapsed / len(TEST_PROMPTS)
-    except Exception:
-        pass  # fall back to None — report will note data unavailable
-
     # ── Final Report ──
-    print_final_report(baseline_results, linearised_results, full_stack_results, quant_map, layers_linearised,
-                        reliability_latency_per_answer_s=reliability_latency_per_answer_s,
-                        baseline_latency_per_answer_s=baseline_latency_per_answer_s,
-                        args=args)
-
-    if getattr(args, "profile_timing", False):
-        from hcl import HCL
-        print("\n" + "=" * 65)
-        print("  HCL TIMING PROFILE REPORT")
-        print("=" * 65)
-        t_gen = HCL.global_timings["on_generation_step"]
-        c_gen = HCL.global_timings["on_generation_step_count"]
-        avg_gen = (t_gen / c_gen * 1000) if c_gen > 0 else 0.0
-        print(f"  on_generation_step (retrieval) : {t_gen:.4f}s (avg: {avg_gen:.2f}ms / step, count: {c_gen})")
-        
-        t_est = HCL.global_timings["extract_cascade"]
-        c_est = HCL.global_timings["extract_cascade_count"]
-        avg_est = (t_est / c_est * 1000) if c_est > 0 else 0.0
-        print(f"  extract_cascade (memory write) : {t_est:.4f}s (avg: {avg_est:.2f}ms / call, count: {c_est})")
-        
-        t_save = HCL.global_timings["save_profile"]
-        c_save = HCL.global_timings["save_profile_count"]
-        avg_save = (t_save / c_save * 1000) if c_save > 0 else 0.0
-        print(f"  save_profile (disk encryption) : {t_save:.4f}s (avg: {avg_save:.2f}ms / call, count: {c_save})")
-        print("=" * 65)
-    update_global_benchmark_trends(args, baseline_results, linearised_results, full_stack_results)
-    if args.check_consistency and consistency_runs is not None:
-        update_prompt_benchmark_trends(
-            prompt=args.check_consistency,
-            args=args,
-            runs=consistency_runs,
-            baseline=baseline_results,
-            linearised_only=linearised_results,
-            full_stack=full_stack_results,
-        )
+    print_final_report(baseline_results, linearised_results, full_stack_results, quant_map, layers_linearised)
 
     # ── Save ──
     if args.save:

@@ -5,7 +5,8 @@ Tests ResearchRetriever against all three sources with a real query.
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from Hydrusopt import ResearchRetriever, ArtifactRenderer, _html_module
+import html as _html_module
+from hydrusopt import ResearchRetriever, ArtifactRenderer
 
 QUERIES = [
     "sleep and memory consolidation",

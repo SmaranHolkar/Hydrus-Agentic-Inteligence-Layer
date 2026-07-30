@@ -1,0 +1,70 @@
+{
+  "baseline": {
+    "avg_tok_per_sec": null,
+    "errors": []
+  },
+  "linearised_only": {
+    "avg_tok_per_sec": null,
+    "errors": []
+  },
+  "full_stack": {
+    "avg_tok_per_sec": null,
+    "errors": []
+  },
+  "speedup_linearisation_only": null,
+  "speedup_full_stack": null,
+  "layers_linearised": [],
+  "quant_map": {
+    "0": "INT4/8 (BitsAndBytes)",
+    "1": "INT4/8 (BitsAndBytes)",
+    "2": "INT4/8 (BitsAndBytes)",
+    "3": "INT4/8 (BitsAndBytes)",
+    "4": "INT4/8 (BitsAndBytes)",
+    "5": "INT4/8 (BitsAndBytes)",
+    "6": "INT4/8 (BitsAndBytes)",
+    "7": "INT4/8 (BitsAndBytes)",
+    "8": "INT4/8 (BitsAndBytes)",
+    "9": "INT4/8 (BitsAndBytes)",
+    "10": "INT4/8 (BitsAndBytes)",
+    "11": "INT4/8 (BitsAndBytes)",
+    "12": "INT4/8 (BitsAndBytes)",
+    "13": "INT4/8 (BitsAndBytes)",
+    "14": "INT4/8 (BitsAndBytes)",
+    "15": "INT4/8 (BitsAndBytes)",
+    "16": "INT4/8 (BitsAndBytes)",
+    "17": "INT4/8 (BitsAndBytes)",
+    "18": "INT4/8 (BitsAndBytes)",
+    "19": "INT4/8 (BitsAndBytes)",
+    "20": "INT4/8 (BitsAndBytes)",
+    "21": "INT4/8 (BitsAndBytes)",
+    "22": "INT4/8 (BitsAndBytes)",
+    "23": "INT4/8 (BitsAndBytes)",
+    "24": "INT4/8 (BitsAndBytes)",
+    "25": "INT4/8 (BitsAndBytes)",
+    "26": "INT4/8 (BitsAndBytes)",
+    "27": "INT4/8 (BitsAndBytes)",
+    "28": "INT4/8 (BitsAndBytes)",
+    "29": "INT4/8 (BitsAndBytes)",
+    "30": "INT4/8 (BitsAndBytes)",
+    "31": "INT4/8 (BitsAndBytes)",
+    "32": "INT4/8 (BitsAndBytes)",
+    "33": "INT4/8 (BitsAndBytes)",
+    "34": "INT4/8 (BitsAndBytes)",
+    "35": "INT4/8 (BitsAndBytes)"
+  },
+  "investor_summary": {
+    "performance_mode": {
+      "label": "HydrusOpt (performance)",
+      "tok_per_sec": null,
+      "delta_vs_baseline_pct": 0.0
+    },
+    "reliability_mode": {
+      "label": "HydrusOpt (reliability)",
+      "baseline_latency_per_answer_s": null,
+      "verified_latency_per_answer_s": 1.831,
+      "safety_tax_pct": 0.0
+    },
+    "safety_tax_pct": 0.0,
+    "safety_tax_narrative": "HydrusOpt delivers verified output with no safety tax (full guard stack is 1% faster than vanilla on the same prompts)."
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "coding-assistant",
+  "version": "1.0.0",
+  "description": "Official HAIL skill for code intelligence, refactoring, and AST analysis.",
+  "author": "Vivere Labs",
+  "tier": "official",
+  "permissions": ["memory:read", "memory:write", "fs:read"],
+  "memory_strata": ["surface", "episodic"],
+  "mcp_connectors": ["git-ops"],
+  "entrypoint": "main.py"
+}

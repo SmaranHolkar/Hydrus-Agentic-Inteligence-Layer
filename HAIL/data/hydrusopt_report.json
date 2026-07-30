@@ -1,0 +1,66 @@
+{
+  "baseline": {
+    "label": "Baseline",
+    "runs": [
+      {
+        "prompt": "Explain quantum entanglement to a 10 year old.",
+        "tok_per_sec": 24.0,
+        "time_sec": 3.336,
+        "output": " Quantum entanglement is like magic! Imagine you have two magical balls that are connected by a very thin string. If you touch one ball, the other ball will instantly know about it and move in exactly"
+      },
+      {
+        "prompt": "What is the difference between RAM and storage?",
+        "tok_per_sec": 24.3,
+        "time_sec": 3.288,
+        "output": " The main difference between RAM (Random Access Memory) and storage is that RAM is a temporary memory used to store data for quick access, while storage refers to any type of permanent or non-volatile"
+      }
+    ],
+    "errors": [],
+    "avg_tok_per_sec": 24.2,
+    "total_time_sec": 6.624
+  },
+  "linearised_only": {
+    "label": "Compiled",
+    "runs": [
+      {
+        "prompt": "Explain quantum entanglement to a 10 year old.",
+        "tok_per_sec": 24.2,
+        "time_sec": 3.303,
+        "output": " Quantum entanglement is like magic! Imagine you have two magical balls that are connected by a very thin string. If you touch one ball, the other ball will instantly know about it and move in exactly"
+      },
+      {
+        "prompt": "What is the difference between RAM and storage?",
+        "tok_per_sec": 24.4,
+        "time_sec": 3.281,
+        "output": " The main difference between RAM (Random Access Memory) and storage is that RAM is a temporary memory used to store data for quick access, while storage refers to any type of permanent or non-volatile"
+      }
+    ],
+    "errors": [],
+    "avg_tok_per_sec": 24.3,
+    "total_time_sec": 6.584
+  },
+  "full_stack": {
+    "label": "Compiled",
+    "runs": [
+      {
+        "prompt": "Explain quantum entanglement to a 10 year old.",
+        "tok_per_sec": 24.2,
+        "time_sec": 3.303,
+        "output": " Quantum entanglement is like magic! Imagine you have two magical balls that are connected by a very thin string. If you touch one ball, the other ball will instantly know about it and move in exactly"
+      },
+      {
+        "prompt": "What is the difference between RAM and storage?",
+        "tok_per_sec": 24.4,
+        "time_sec": 3.281,
+        "output": " The main difference between RAM (Random Access Memory) and storage is that RAM is a temporary memory used to store data for quick access, while storage refers to any type of permanent or non-volatile"
+      }
+    ],
+    "errors": [],
+    "avg_tok_per_sec": 24.3,
+    "total_time_sec": 6.584
+  },
+  "speedup_linearisation_only": 1.0,
+  "speedup_full_stack": 1.0,
+  "layers_linearised": [],
+  "quant_map": {}
+}

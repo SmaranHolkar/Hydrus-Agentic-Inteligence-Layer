@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HAILSkillManifest",
+  "type": "object",
+  "required": ["name", "version", "description"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9_-]+$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "description": {
+      "type": "string"
+    },
+    "author": {
+      "type": "string"
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["official", "community", "experimental"]
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "memory:read",
+          "memory:write",
+          "memory:abyss",
+          "fs:read",
+          "fs:write",
+          "network:outbound",
+          "mcp:connect"
+        ]
+      }
+    },
+    "memory_strata": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "mcp_connectors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "entrypoint": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}
