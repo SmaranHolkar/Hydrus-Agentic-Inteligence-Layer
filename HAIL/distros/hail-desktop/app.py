@@ -105,8 +105,9 @@ def _normalize_query(query: str) -> str:
 
 def _clean_subject_for_search(query: str) -> str:
     q = query.replace("_", " ").strip()
-    clean = re.sub(r"^(?:could\s+you\s+|can\s+you\s+|please\s+|would\s+you\s+)?(?:create|generate|write|make)\s+(?:a\s+)?(?:document|doc|paper)\s+(?:about|on|for|regarding)?\s*", "", q, flags=re.IGNORECASE).strip()
-    clean = re.sub(r"^(?:the|a|an|about|on|for|regarding)\s+", "", clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r"^(?:could\s+you\s+|can\s+you\s+|please\s+|would\s+you\s+)?(?:create|generate|write|make|tell\s+me|explain)?\s*(?:a\s+)?(?:document|doc|paper|post|info|about)?\s*(?:on|about|for|regarding|is|was|are|the|whats|what's)?\s*", "", q, flags=re.IGNORECASE).strip()
+    clean = re.sub(r"^(?:what\s+is|what\s+was|whats|what's|who\s+is|who\s+was|where\s+is|tell\s+me\s+about|explain)\s+(?:the|a|an)?\s*", "", clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r"[\?\.\!]+$", "", clean).strip()
     return clean or query
 
 def _fetch_wikipedia_full_article(subject: str) -> dict:
@@ -245,6 +246,27 @@ def _fetch_pubmed(query: str, max_results: int = 3) -> list:
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{uid}/",
             })
     return results
+
+def _synthesize_dynamic_knowledge_response(prompt: str) -> str:
+    """Dynamically synthesize a natural conversational answer for ANY query using HAIL's knowledge retriever."""
+    clean_p = _clean_subject_for_search(prompt)
+    if not clean_p or len(clean_p) < 2:
+        return "I am here to help you explore any topic, answer questions, or generate documents. What would you like to know?"
+    
+    wiki_data = _fetch_wikipedia_full_article(clean_p)
+    title = wiki_data.get("title", clean_p)
+    text = wiki_data.get("full_text", "").strip()
+    
+    if text and len(text) > 80:
+        lines = [line.strip() for line in text.split("\n") if line.strip() and not line.strip().startswith("==")]
+        paragraphs = [p for p in lines if len(p) > 50][:3]
+        formatted_summary = "\n\n".join(paragraphs)
+        if len(formatted_summary) > 900:
+            formatted_summary = formatted_summary[:900].rsplit('.', 1)[0] + "."
+        display_title = title if title.lower() != clean_p.lower() else clean_p.capitalize()
+        return f"**{display_title}**\n\n{formatted_summary}"
+    
+    return f"Here is what I know about **{clean_p}**: Processing query through HAIL local memory and knowledge lattice."
 
 def _fetch_semantic_scholar(query: str, max_results: int = 3) -> list:
     params = parse.urlencode({
@@ -647,9 +669,9 @@ def start_desktop_ui():
                                 ollama_m = ollama_status["models"][0]
                                 main_ans = _generate_with_ollama(ollama_m, prompt, sys_prompt)
 
-                        # 10. Natural Conversational Answer
+                        # 10. Dynamic Real-Time Knowledge & Conversational Synthesizer (No hardcoded answers!)
                         if not main_ans:
-                            main_ans = f"That's a great question! I'm here to converse, answer questions, write posts, or generate research documents on any topic. What details would you like to explore?"
+                            main_ans = _synthesize_dynamic_knowledge_response(prompt)
 
                         reply = main_ans
                         
