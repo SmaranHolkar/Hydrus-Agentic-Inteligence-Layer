@@ -687,11 +687,30 @@ def start_desktop_ui():
                                 "Check out the open-source repository on GitHub: https://github.com/SmaranHolkar/Hydrus-Agentic-Inteligence-Layer 🌐"
                             )
 
+                    # Active model display name parsing
+                    active_display_name = "HAIL Edge Core"
+                    if model.startswith("moe:"):
+                        active_display_name = model.replace("moe:", "")
+                    elif model.startswith("local:"):
+                        active_display_name = model.replace("local:", "")
+                    elif model.startswith("ollama:"):
+                        active_display_name = model.replace("ollama:", "")
+                    elif model:
+                        active_display_name = model
+
                     # 8. Greetings & Model Identity
-                    elif lower_p in ["hi", "hello", "hey", "greetings", "hi there"]:
-                        main_ans = f"Hello! I am active and ready. Powered by **{moe_model_id}** via **HydrusMoE** 4-tier streaming."
+                    if lower_p in ["hi", "hello", "hey", "greetings", "hi there"]:
+                        if model.startswith("moe:"):
+                            main_ans = f"Hello! I am active and ready. Powered by **{active_display_name}** via **HydrusMoE** 4-tier streaming."
+                        elif model.startswith("local:") or model.startswith("ollama:"):
+                            main_ans = f"Hello! I am active and ready. Powered by local model **{active_display_name}**."
+                        else:
+                            main_ans = f"Hello! I am active and ready. Powered by **{active_display_name}**."
                     elif any(k in lower_p for k in ["what model", "who are you", "what are you"]):
-                        main_ans = f"I am running as **{moe_model_id}** (14.3B Total / 2.7B Active Parameters per token) via **HydrusMoE** secure 4-tier memory streaming."
+                        if model.startswith("moe:"):
+                            main_ans = f"I am running as **{active_display_name}** (14.3B Total / 2.7B Active Parameters per token) via **HydrusMoE** secure 4-tier memory streaming."
+                        else:
+                            main_ans = f"I am running as local model **{active_display_name}** via the HAIL Cognitive gateway."
 
                     # 9. Try Ollama first if model starts with ollama: or is custom
                     if not main_ans and model and not model.startswith("moe:"):
@@ -706,7 +725,7 @@ def start_desktop_ui():
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
-                    self.wfile.write(json.dumps({"response": main_ans, "source": "hydrusmoe", "model": moe_model_id, "execution_mode": execution_mode}).encode())
+                    self.wfile.write(json.dumps({"response": main_ans, "source": "hydrusmoe" if model.startswith("moe:") else "hail_edge", "model": active_display_name, "execution_mode": execution_mode}).encode())
                     return
                 except Exception as e:
                     print(f"[HAIL Chat Error] {e}")
