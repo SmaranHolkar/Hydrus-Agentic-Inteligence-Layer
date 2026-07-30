@@ -1063,9 +1063,9 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
       }).then(() => this.fetchMoETelemetry()).catch(err => console.warn("MoE model load error:", err));
     }
 
-    const isDocTrigger = lower.includes("doc") || lower.includes("document") || lower.includes("history of") || lower.includes("write about") || lower.includes("create") || lower.includes("generate") || lower.includes("paper on");
+    const isDocTrigger = lower.includes("doc") || lower.includes("document") || lower.includes("history of") || lower.includes("paper on");
 
-    if (activeMoEModel && !isDocTrigger && !lower.includes("what did i ask") && !lower.includes("my name is") && !lower.includes("show my memory")) {
+    if (activeMoEModel && !isDocTrigger && !lower.includes("what did i ask") && !lower.includes("my name is") && !lower.includes("show my memory") && !lower.includes("linkedin") && !lower.includes("linkdin") && !lower.includes("post") && !lower.includes("graduat")) {
       try {
         const memStrings = recalledMemories.map(m => m.text);
         const resp = await fetch('/api/chat', {
@@ -1177,6 +1177,40 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
     // Train / Speed Questions
     if (lower.includes("fastest train") || lower.includes("speed of train") || lower.includes("maglev") || (lower.includes("train") && lower.includes("fast"))) {
       return `The world's fastest operational commercial train is the **Shanghai Maglev** in China, with a top speed of **460 km/h (286 mph)**.\n\nIn terms of experimental records, Japan's **SCMaglev L0 Series** holds the absolute world record at **603 km/h (375 mph)**.`;
+    }
+
+    // LinkedIn / Social Media & Graduation Post Generator (Tolerates typos: linkedin, linkdin, linkding, post)
+    const isPostReq = /\b(linkedin|linkdin|linkding|post|social media)\b/i.test(lower) || lower.includes("write a post");
+    if (isPostReq) {
+      const nameMem = this.memories.find(m => m.text.toLowerCase().includes("name is") || m.text.toLowerCase().includes("call as"));
+      let nameVal = nameMem ? (nameMem.text.split("Name is ")[1] || nameMem.text.split("Call as ")[1] || "").trim() : "";
+      if (nameVal) {
+        nameVal = nameVal.charAt(0).toUpperCase() + nameVal.slice(1);
+      }
+
+      const eduMem = this.memories.find(m => m.text.toLowerCase().includes("education") || m.text.toLowerCase().includes("degree") || m.text.toLowerCase().includes("graduat") || m.text.toLowerCase().includes("software engineering"));
+      let eduVal = eduMem ? eduMem.text.replace(/Education:\s*/i, '').replace(/the degree I graduated in was\s*/i, '').trim() : "Software Engineering";
+
+      // If prompt is specifically about graduation
+      if (lower.includes("graduat") || lower.includes("degree") || lower.includes("university") || lower.includes("college")) {
+        const displayName = nameVal || "Smaran";
+        return `🎓 **Excited to share a major milestone: I have officially graduated!** 🎓\n\n` +
+               `I am thrilled to announce that I have completed my degree in **${eduVal}**! 🚀\n\n` +
+               `Throughout this journey, I've had the opportunity to dive deep into modern software architecture, edge AI systems, high-performance computing, and agentic intelligence.\n\n` +
+               `A huge thank you to my family, mentors, peers, and friends who supported me along the way. I'm excited for the next chapter in software engineering and AI innovation!\n\n` +
+               `#Graduation #${eduVal.replace(/\s+/g, '')} #SoftwareEngineering #CareerMilestone #Tech #NewBeginnings`;
+      }
+
+      // Default HAIL & Tech Release LinkedIn Post
+      return `🚀 **Excited to share HAIL & HydrusMoE with the world!** 🧠⚡\n\n` +
+             `Running 30B+ Mixture-of-Experts models used to require $10,000+ datacenter GPUs. We built **HAIL** to democratize local AI — enabling streamable MoE execution directly on consumer 4–6GB VRAM GPUs!\n\n` +
+             `✨ **Key Highlights:**\n` +
+             `• **4-Tier Streaming**: GPU VRAM Hot Path ➔ Host RAM Warm Cache ➔ Encrypted Local SSD ➔ Oblivious Cloud CDN.\n` +
+             `• **Zero-Trust Security**: Hardware-bound AES-256-GCM encryption (\`HKDF-SHA256\`) and decoy dummy expert padding.\n` +
+             `• **Stratified Memory Lattice**: Permanent hard drive disk memory persistence.\n` +
+             `• **Autonomous Literature Engine**: Wikipedia, arXiv, PubMed research document synthesis.\n\n` +
+             `Check out the open-source repository on GitHub: https://github.com/SmaranHolkar/Hydrus-Agentic-Inteligence-Layer 🌐\n\n` +
+             `#AI #MachineLearning #OpenSource #DeepLearning #PyTorch #EdgeAI`;
     }
 
     // 0. Gratitude, Compliments & Friendly Feedback (Human Warmth)
