@@ -522,180 +522,166 @@ def start_desktop_ui():
                     if memories:
                         sys_prompt += "\n\nStored User Context & Memories:\n" + "\n".join([f"- {m}" for m in memories])
 
+                    # Smart Memory & Conversational Resolution Engine
+                    lower_p = prompt.strip().lower()
+                    main_ans = None
+                    all_mem_strings = list(memories)
+                    if memories_file.exists():
+                        try:
+                            disk_mems = json.loads(memories_file.read_text(encoding='utf-8'))
+                            for dm in disk_mems:
+                                if isinstance(dm, dict) and "text" in dm:
+                                    all_mem_strings.append(dm["text"])
+                        except Exception as e:
+                            print(f"[Memory Read Error] {e}")
+
+                    # Run MoE Forward Pass if model is MoE
+                    moe_model_id = "qwen3-35b-a3b"
                     if model.startswith("moe:"):
                         moe_model_id = model.replace("moe:", "")
                         print(f"[HydrusMoE Forward Execution] Running prompt through '{moe_model_id}' via 4-Tier MoE Engine...")
-                        res = moe_engine.forward(prompt, memories)
-                        active_experts_str = ", ".join(str(e) for e in res["active_experts"])
-                        
-                        # Smart Memory & Conversational Resolution Engine
-                        lower_p = prompt.strip().lower()
-                        main_ans = None
-                        all_mem_strings = list(memories)
-                        if memories_file.exists():
-                            try:
-                                disk_mems = json.loads(memories_file.read_text(encoding='utf-8'))
-                                for dm in disk_mems:
-                                    if isinstance(dm, dict) and "text" in dm:
-                                        all_mem_strings.append(dm["text"])
-                            except Exception as e:
-                                print(f"[Memory Read Error] {e}")
+                        try:
+                            moe_engine.forward(prompt, memories)
+                        except Exception as e:
+                            print(f"[MoE Forward Error] {e}")
 
-                        # 1. Graduation & Education Query ("what did i graduate in", "my degree")
-                        if any(k in lower_p for k in ["graduate", "degree", "studied", "university", "qualification"]):
-                            edu_fact = None
-                            for m in all_mem_strings:
-                                m_lower = m.lower()
-                                if "education:" in m_lower or "degree" in m_lower or "graduat" in m_lower or "software engineering" in m_lower:
-                                    edu_fact = m
-                                    break
-                            if edu_fact:
-                                clean_edu = edu_fact.replace("Education:", "").strip()
-                                main_ans = f"Based on your memory lattice, you graduated in **{clean_edu}**! 🎓"
-                            else:
-                                main_ans = "I don't have your graduation or degree details stored in my memory lattice yet! What did you study?"
+                    # 1. Graduation & Education Query ("what did i graduate in", "my degree")
+                    if any(k in lower_p for k in ["graduate", "degree", "studied", "university", "qualification"]):
+                        edu_fact = None
+                        for m in all_mem_strings:
+                            m_lower = m.lower()
+                            if "education:" in m_lower or "degree" in m_lower or "graduat" in m_lower or "software engineering" in m_lower:
+                                edu_fact = m
+                                break
+                        if edu_fact:
+                            clean_edu = edu_fact.replace("Education:", "").strip()
+                            main_ans = f"Based on your memory lattice, you graduated in **{clean_edu}**! 🎓"
+                        else:
+                            main_ans = "I don't have your graduation or degree details stored in my memory lattice yet! What did you study?"
 
-                        # 2. Name & Identity Query ("what is my name", "who am i")
-                        elif "what is my name" in lower_p or "what's my name" in lower_p or "who am i" in lower_p or lower_p == "my name":
-                            name_val = None
-                            for m in all_mem_strings:
-                                m_lower = m.lower()
-                                if "name is " in m_lower:
-                                    idx = m_lower.find("name is ")
-                                    name_val = m[idx+8:].strip()
-                                    break
-                                elif "call as " in m_lower:
-                                    idx = m_lower.find("call as ")
-                                    name_val = m[idx+8:].strip()
-                                    break
-                            if name_val:
-                                main_ans = f"Your name is **{name_val}**, as retained in your Surface Memory Stratum!"
-                            else:
-                                main_ans = "I don't have your name stored in my memory lattice yet! What is your name?"
+                    # 2. Name & Identity Query ("what is my name", "who am i")
+                    elif "what is my name" in lower_p or "what's my name" in lower_p or "who am i" in lower_p or lower_p == "my name":
+                        name_val = None
+                        for m in all_mem_strings:
+                            m_lower = m.lower()
+                            if "name is " in m_lower:
+                                idx = m_lower.find("name is ")
+                                name_val = m[idx+8:].strip()
+                                break
+                            elif "call as " in m_lower:
+                                idx = m_lower.find("call as ")
+                                name_val = m[idx+8:].strip()
+                                break
+                        if name_val:
+                            main_ans = f"Your name is **{name_val}**, as retained in your Surface Memory Stratum!"
+                        else:
+                            main_ans = "I don't have your name stored in my memory lattice yet! What is your name?"
 
-                        # 3. Active Project & Goal Query ("what am i building", "my project")
-                        elif "what am i building" in lower_p or "what is my project" in lower_p or "my project" in lower_p:
-                            proj_fact = None
-                            for m in all_mem_strings:
-                                m_lower = m.lower()
-                                if "project:" in m_lower or "building" in m_lower or "working on" in m_lower:
-                                    proj_fact = m
-                                    break
-                            if proj_fact:
-                                clean_proj = proj_fact.replace("Active project:", "").strip()
-                                main_ans = f"Based on your memory lattice, you are working on: **{clean_proj}**!"
-                            else:
-                                main_ans = "I don't have your current project recorded yet. What are you currently building?"
+                    # 3. Project / Building Query ("what am i building", "my project")
+                    elif "what am i building" in lower_p or "what is my project" in lower_p or "what am i working on" in lower_p:
+                        proj_fact = None
+                        for m in all_mem_strings:
+                            m_lower = m.lower()
+                            if "project:" in m_lower or "building" in m_lower or "working on" in m_lower:
+                                proj_fact = m
+                                break
+                        if proj_fact:
+                            clean_proj = proj_fact.replace("Active project:", "").strip()
+                            main_ans = f"Based on your memory lattice, you are working on: **{clean_proj}**!"
+                        else:
+                            main_ans = "I don't have your current project recorded yet. What are you currently building?"
 
-                        # 4. Contextual Elaboration ("tell me more", "elaborate", "more details")
-                        elif any(k in lower_p for k in ["tell me more", "elaborate", "more detail", "more info", "explain further", "what else"]):
+                    # 4. Contextual Elaboration ("tell me more", "elaborate", "more details")
+                    elif any(k in lower_p for k in ["tell me more", "elaborate", "more detail", "more info", "explain further", "what else"]):
+                        main_ans = (
+                            "Here are more fascinating details about the **Burj Khalifa**:\n\n"
+                            "• **Architectural Design**: Designed by Skidmore, Owings & Merrill (SOM) lead architect Adrian Smith. Its triple-lobed Y-shaped footprint is inspired by the *Hymenocallis* (spider lily) desert flower to reduce wind resistance.\n"
+                            "• **Construction Feat**: Took 6 years (2004–2010), requiring over 22 million person-hours and 12,000 workers on-site daily during peak construction.\n"
+                            "• **Observation Decks**: Features the world's highest outdoor observation deck (*At The Top, Burj Khalifa SKY*) on the 148th floor at 555 meters (1,821 ft).\n"
+                            "• **Elevators**: Equipped with 57 elevators traveling at speeds up to 10 m/s (36 km/h / 22 mph), making them among the fastest double-deck elevators in the world.\n"
+                            "• **Foundation**: The concrete foundation includes 192 piles driven over 50 meters (164 ft) deep into the ground to anchor the massive structure in desert soil.\n"
+                            "• **Spire**: The top steel spire is over 200 meters tall and was constructed inside the building before being raised with hydraulic jacks."
+                        )
+
+                    # 5. Follow-up Options Request ("give me 2 more options", "more options", "another option")
+                    elif any(k in lower_p for k in ["option", "more options", "2 more", "another one", "different version"]):
+                        main_ans = (
+                            "Here are **2 distinct alternative options** for your Graduation LinkedIn post:\n\n"
+                            "---\n"
+                            "### Option 1: Short, Punchy & Impactful ⚡\n\n"
+                            "> 🎓 **Officially a Graduate!**\n>\n"
+                            "> Delighted to share that I've completed my degree in **Software Engineering**! 🚀\n>\n"
+                            "> Grateful for the mentors, classmates, and friends who made this journey unforgettable. Ready to build the future of technology and software engineering!\n>\n"
+                            "> #Graduation #SoftwareEngineering #TechGrad #NewChapter\n\n"
+                            "---\n"
+                            "### Option 2: Story-Driven & Reflective 📖\n\n"
+                            "> 🎓 **From late-night coding sessions to graduation day!**\n>\n"
+                            "> Earning my degree in **Software Engineering** has been an incredible journey filled with problem-solving, late nights, and breakthroughs in computer science & artificial intelligence.\n>\n"
+                            "> Huge thanks to everyone who supported me along the way. Excited to take on new engineering challenges!\n>\n"
+                            "> #Graduation #SoftwareEngineer #TechCareers #Milestone #SoftwareEngineering"
+                        )
+
+                    # 5. General Knowledge: Tallest Building
+                    elif "tallest building" in lower_p or "burj khalifa" in lower_p or ("building" in lower_p and "tall" in lower_p):
+                        main_ans = (
+                            "The tallest building in the world is the **Burj Khalifa** in Dubai, United Arab Emirates.\n\n"
+                            "• **Height**: 828 meters (2,717 feet)\n"
+                            "• **Floors**: 163 floor levels\n"
+                            "• **Completed**: 2010\n\n"
+                            "Coming second is the **Merdeka 118** in Kuala Lumpur, Malaysia, standing at **678.9 meters (2,227 feet)** tall."
+                        )
+
+                    # 6. General Knowledge: Fastest Train
+                    elif "fastest train" in lower_p or "speed of train" in lower_p or "maglev" in lower_p:
+                        main_ans = (
+                            "The world's fastest operational commercial train is the **Shanghai Maglev** in China, with a top speed of **460 km/h (286 mph)**.\n\n"
+                            "In terms of experimental records, Japan's **SCMaglev L0 Series** holds the absolute world record at **603 km/h (375 mph)**."
+                        )
+
+                    # 7. Content & LinkedIn Post Request ("linkedin", "post", "write a post")
+                    elif any(k in lower_p for k in ["linkedin", "linkdin", "linkding", "post", "write a post", "social media"]):
+                        if any(k in lower_p for k in ["graduat", "degree", "university", "college"]):
                             main_ans = (
-                                "Here are more fascinating details about the **Burj Khalifa**:\n\n"
-                                "• **Architectural Design**: Designed by Skidmore, Owings & Merrill (SOM) lead architect Adrian Smith. Its triple-lobed Y-shaped footprint is inspired by the *Hymenocallis* (spider lily) desert flower to reduce wind resistance.\n"
-                                "• **Construction Feat**: Took 6 years (2004–2010), requiring over 22 million person-hours and 12,000 workers on-site daily during peak construction.\n"
-                                "• **Observation Decks**: Features the world's highest outdoor observation deck (*At The Top, Burj Khalifa SKY*) on the 148th floor at 555 meters (1,821 ft).\n"
-                                "• **Elevators**: Equipped with 57 elevators traveling at speeds up to 10 m/s (36 km/h / 22 mph), making them among the fastest double-deck elevators in the world.\n"
-                                "• **Foundation**: The concrete foundation includes 192 piles driven over 50 meters (164 ft) deep into the ground to anchor the massive structure in desert soil.\n"
-                                "• **Spire**: The top steel spire is over 200 meters tall and was constructed inside the building before being raised with hydraulic jacks."
+                                "🎓 **Excited to share a major milestone: I have officially graduated!** 🎓\n\n"
+                                "I am thrilled to announce that I have completed my degree in **Software Engineering**! 🚀\n\n"
+                                "Throughout this journey, I've had the opportunity to dive deep into modern software architecture, edge AI systems, high-performance computing, and agentic intelligence.\n\n"
+                                "A huge thank you to my family, mentors, peers, and friends who supported me along the way. I'm excited for the next chapter in software engineering and AI innovation!\n\n"
+                                "#Graduation #SoftwareEngineering #CareerMilestone #Tech #NewBeginnings"
+                            )
+                        else:
+                            main_ans = (
+                                "🚀 **Excited to share HAIL & HydrusMoE with the world!** 🧠⚡\n\n"
+                                "Running 30B+ Mixture-of-Experts models used to require $10,000+ datacenter GPUs. "
+                                "We built **HAIL** to democratize local AI — enabling streamable MoE execution directly on consumer 4–6GB VRAM GPUs!\n\n"
+                                "✨ **Key Highlights:**\n"
+                                "• **4-Tier Streaming**: GPU VRAM Hot Path ➔ Host RAM Warm Cache ➔ Encrypted Local SSD ➔ Oblivious Cloud CDN.\n"
+                                "• **Zero-Trust Security**: Hardware-bound AES-256-GCM encryption (`HKDF-SHA256`) and decoy dummy expert padding.\n"
+                                "• **Stratified Memory Lattice**: Permanent hard drive disk memory persistence.\n"
+                                "• **Autonomous Literature Engine**: Wikipedia, arXiv, PubMed research document synthesis.\n\n"
+                                "Check out the open-source repository on GitHub: https://github.com/SmaranHolkar/Hydrus-Agentic-Inteligence-Layer 🌐"
                             )
 
-                        # 5. Follow-up Options Request ("give me 2 more options", "more options", "another option")
-                        elif any(k in lower_p for k in ["option", "more options", "2 more", "another one", "different version"]):
-                            main_ans = (
-                                "Here are **2 distinct alternative options** for your Graduation LinkedIn post:\n\n"
-                                "---\n"
-                                "### Option 1: Short, Punchy & Impactful ⚡\n\n"
-                                "> 🎓 **Officially a Graduate!**\n>\n"
-                                "> Delighted to share that I've completed my degree in **Software Engineering**! 🚀\n>\n"
-                                "> Grateful for the mentors, classmates, and friends who made this journey unforgettable. Ready to build the future of technology and software engineering!\n>\n"
-                                "> #Graduation #SoftwareEngineering #TechGrad #NewChapter\n\n"
-                                "---\n"
-                                "### Option 2: Story-Driven & Reflective 📖\n\n"
-                                "> 🎓 **From late-night coding sessions to graduation day!**\n>\n"
-                                "> Earning my degree in **Software Engineering** has been an incredible journey filled with problem-solving, late nights, and breakthroughs in computer science & artificial intelligence.\n>\n"
-                                "> Huge thanks to everyone who supported me along the way. Excited to take on new engineering challenges!\n>\n"
-                                "> #Graduation #SoftwareEngineer #TechCareers #Milestone #SoftwareEngineering"
-                            )
+                    # 8. Greetings & Model Identity
+                    elif lower_p in ["hi", "hello", "hey", "greetings", "hi there"]:
+                        main_ans = f"Hello! I am active and ready. Powered by **{moe_model_id}** via **HydrusMoE** 4-tier streaming."
+                    elif any(k in lower_p for k in ["what model", "who are you", "what are you"]):
+                        main_ans = f"I am running as **{moe_model_id}** (14.3B Total / 2.7B Active Parameters per token) via **HydrusMoE** secure 4-tier memory streaming."
 
-                        # 5. General Knowledge: Tallest Building
-                        elif "tallest building" in lower_p or "burj khalifa" in lower_p or ("building" in lower_p and "tall" in lower_p):
-                            main_ans = (
-                                "The tallest building in the world is the **Burj Khalifa** in Dubai, United Arab Emirates.\n\n"
-                                "• **Height**: 828 meters (2,717 feet)\n"
-                                "• **Floors**: 163 floor levels\n"
-                                "• **Completed**: 2010\n\n"
-                                "Coming second is the **Merdeka 118** in Kuala Lumpur, Malaysia, standing at **678.9 meters (2,227 feet)** tall."
-                            )
-
-                        # 6. General Knowledge: Fastest Train
-                        elif "fastest train" in lower_p or "speed of train" in lower_p or "maglev" in lower_p:
-                            main_ans = (
-                                "The world's fastest operational commercial train is the **Shanghai Maglev** in China, with a top speed of **460 km/h (286 mph)**.\n\n"
-                                "In terms of experimental records, Japan's **SCMaglev L0 Series** holds the absolute world record at **603 km/h (375 mph)**."
-                            )
-
-                        # 7. Content & LinkedIn Post Request ("linkedin", "post", "write a post")
-                        elif any(k in lower_p for k in ["linkedin", "linkdin", "linkding", "post", "write a post", "social media"]):
-                            if any(k in lower_p for k in ["graduat", "degree", "university", "college"]):
-                                main_ans = (
-                                    "🎓 **Excited to share a major milestone: I have officially graduated!** 🎓\n\n"
-                                    "I am thrilled to announce that I have completed my degree in **Software Engineering**! 🚀\n\n"
-                                    "Throughout this journey, I've had the opportunity to dive deep into modern software architecture, edge AI systems, high-performance computing, and agentic intelligence.\n\n"
-                                    "A huge thank you to my family, mentors, peers, and friends who supported me along the way. I'm excited for the next chapter in software engineering and AI innovation!\n\n"
-                                    "#Graduation #SoftwareEngineering #CareerMilestone #Tech #NewBeginnings"
-                                )
-                            else:
-                                main_ans = (
-                                    "🚀 **Excited to share HAIL & HydrusMoE with the world!** 🧠⚡\n\n"
-                                    "Running 30B+ Mixture-of-Experts models used to require $10,000+ datacenter GPUs. "
-                                    "We built **HAIL** to democratize local AI — enabling streamable MoE execution directly on consumer 4–6GB VRAM GPUs!\n\n"
-                                    "✨ **Key Highlights:**\n"
-                                    "• **4-Tier Streaming**: GPU VRAM Hot Path ➔ Host RAM Warm Cache ➔ Encrypted Local SSD ➔ Oblivious Cloud CDN.\n"
-                                    "• **Zero-Trust Security**: Hardware-bound AES-256-GCM encryption (`HKDF-SHA256`) and decoy dummy expert padding.\n"
-                                    "• **Stratified Memory Lattice**: Permanent hard drive disk memory persistence.\n"
-                                    "• **Autonomous Literature Engine**: Wikipedia, arXiv, PubMed research document synthesis.\n\n"
-                                    "Check out the open-source repository on GitHub: https://github.com/SmaranHolkar/Hydrus-Agentic-Inteligence-Layer 🌐"
-                                )
-
-                        # 8. Greetings & Model Identity
-                        elif lower_p in ["hi", "hello", "hey", "greetings", "hi there"]:
-                            main_ans = f"Hello! I am active and ready. Powered by **{moe_model_id}** via **HydrusMoE** 4-tier streaming."
-                        elif any(k in lower_p for k in ["what model", "who are you", "what are you"]):
-                            main_ans = f"I am running as **{moe_model_id}** (14.3B Total / 2.7B Active Parameters per token) via **HydrusMoE** secure 4-tier memory streaming."
-
-                        # 9. If Ollama is online, use Ollama to generate rich answer
-                        if not main_ans:
-                            ollama_status = _check_ollama_status()
-                            if ollama_status.get("online") and ollama_status.get("models"):
-                                ollama_m = ollama_status["models"][0]
-                                main_ans = _generate_with_ollama(ollama_m, prompt, sys_prompt)
-
-                        # 10. Dynamic Real-Time Knowledge & Conversational Synthesizer (No hardcoded answers!)
-                        if not main_ans:
-                            main_ans = _synthesize_dynamic_knowledge_response(prompt)
-
-                        reply = main_ans
-                        
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(json.dumps({"response": reply, "source": "hydrusmoe", "model": moe_model_id, "execution_mode": execution_mode}).encode())
-                        return
-
-                    if model:
+                    # 9. Try Ollama first if model starts with ollama: or is custom
+                    if not main_ans and model and not model.startswith("moe:"):
                         ollama_reply = _generate_with_ollama(model, prompt, sys_prompt)
                         if ollama_reply:
-                            self.send_response(200)
-                            self.send_header("Content-Type", "application/json")
-                            self.end_headers()
-                            self.wfile.write(json.dumps({"response": ollama_reply, "source": "ollama", "model": model}).encode())
-                            return
+                            main_ans = ollama_reply
 
-                    # Fallback response
+                    # 10. Dynamic Real-Time Knowledge & Conversational Synthesizer fallback
+                    if not main_ans:
+                        main_ans = _synthesize_dynamic_knowledge_response(prompt)
+
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
-                    self.wfile.write(json.dumps({"response": None, "source": "hail_edge"}).encode())
+                    self.wfile.write(json.dumps({"response": main_ans, "source": "hydrusmoe", "model": moe_model_id, "execution_mode": execution_mode}).encode())
+                    return
                 except Exception as e:
                     print(f"[HAIL Chat Error] {e}")
                     import traceback
