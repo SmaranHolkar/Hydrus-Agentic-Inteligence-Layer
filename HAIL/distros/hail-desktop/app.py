@@ -259,12 +259,24 @@ def _synthesize_dynamic_knowledge_response(prompt: str) -> str:
     
     if text and len(text) > 80:
         lines = [line.strip() for line in text.split("\n") if line.strip() and not line.strip().startswith("==")]
-        paragraphs = [p for p in lines if len(p) > 50][:3]
-        formatted_summary = "\n\n".join(paragraphs)
-        if len(formatted_summary) > 900:
-            formatted_summary = formatted_summary[:900].rsplit('.', 1)[0] + "."
-        display_title = title if title.lower() != clean_p.lower() else clean_p.capitalize()
-        return f"**{display_title}**\n\n{formatted_summary}"
+        paragraphs = [p for p in lines if len(p) > 50]
+        
+        is_direct_question = "?" in prompt or any(prompt.lower().startswith(q) for q in ["what", "who", "where", "which", "is ", "are "])
+        if is_direct_question or "list of" in title.lower():
+            summary = paragraphs[0] if paragraphs else text[:300]
+            if "this is a chronological list" in summary.lower() or "this is a list" in summary.lower():
+                sentences = re.split(r'(?<=[.!?])\s+', summary)
+                factual_sentences = [s for s in sentences if not s.lower().startswith("this is a list") and not s.lower().startswith("this is a chronological list")]
+                if factual_sentences:
+                    summary = " ".join(factual_sentences)
+            return summary
+        else:
+            paras_to_use = paragraphs[:3] if paragraphs else [text[:600]]
+            formatted_summary = "\n\n".join(paras_to_use)
+            if len(formatted_summary) > 900:
+                formatted_summary = formatted_summary[:900].rsplit('.', 1)[0] + "."
+            display_title = title if title.lower() != clean_p.lower() else clean_p.capitalize()
+            return f"**{display_title}**\n\n{formatted_summary}"
     
     return f"Here is what I know about **{clean_p}**: Processing query through HAIL local memory and knowledge lattice."
 
