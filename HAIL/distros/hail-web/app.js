@@ -401,41 +401,6 @@ class HAILChatApp {
             }
           }, 1500);
 
-          // 3. Render Agentic Initialization log inside chat feed!
-          const modelName = select.options[select.selectedIndex]?.text || this.selectedUnifiedModel;
-          const flagLabels = {
-            "fast": "⚡ Fast Mode (Max Speed, Greedy Stream Path)",
-            "safe": "🛡️ Safe Mode (Zero-Trust Guarded, AES-256-GCM Verified)",
-            "eval": "🧪 Eval Mode (Metacognitive Self-Correction & Confidence Scoring)"
-          };
-          const flagLabel = flagLabels[this.selectedExecutionMode] || this.selectedExecutionMode;
-          const memoryCount = this.memories.length;
-
-          const initLog = `
-<div class="agentic-console" style="background: rgba(15, 23, 42, 0.95); border: 1px solid rgba(139, 92, 246, 0.4); border-radius: 8px; padding: 0.8rem; font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.5; color: #a5f3fc; text-shadow: 0 0 4px rgba(165, 243, 252, 0.2); box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3); margin: 0.5rem 0; animation: borderPulse 2s infinite alternate;">
-  <div style="font-weight: 700; color: #f472b6; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.4rem;">
-    <span style="width: 8px; height: 8px; background: #f472b6; border-radius: 50%; display: inline-block; animation: blink 1s infinite;"></span>
-    🤖 [HAIL COGNITIVE AGENTIC SYSTEM INITIALIZED]
-  </div>
-  <div style="color: #38bdf8;">├─ ⚙️ ACTIVE ENGINE: <span style="color: #34d399; font-weight: 600;">${this.escape(modelName)}</span></div>
-  <div style="color: #38bdf8;">├─ ⚙️ EXECUTION FLAG: <span style="color: #fb7185; font-weight: 600;">${this.escape(flagLabel)}</span></div>
-  <div style="color: #38bdf8;">├─ 🔒 ENCRYPTION KEY: <span style="color: #e2e8f0; font-family: monospace;">SHA256-HKDF (AES-256-GCM Security Decoy Active)</span></div>
-  <div style="color: #38bdf8;">├─ 📡 SML GROUNDING: <span style="color: #fca5a5; font-weight: 600;">Lattice Active (${memoryCount} Facts Loaded)</span></div>
-  <div style="color: #38bdf8;">└─ 🟢 STATUS: <span style="color: #34d399; font-weight: 700; text-transform: uppercase;">Cognitive Gateway Ready. Listening for instructions...</span></div>
-</div>
-          `;
-
-          const div = document.createElement("div");
-          div.className = "chat-bubble assistant";
-          div.style.background = "transparent";
-          div.style.border = "none";
-          div.style.boxShadow = "none";
-          div.style.padding = "0";
-          div.style.maxWidth = "100%";
-          div.innerHTML = initLog;
-          
-          this.chatFeed.appendChild(div);
-          this.chatFeed.scrollTop = this.chatFeed.scrollHeight;
         }
       });
     }
@@ -1025,12 +990,17 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
         console.warn("Memory recall warning:", err);
       }
 
-      // 3. Generate Intelligent Assistant Response
       setTimeout(async () => {
         try {
-          const responseText = await this.generateIntelligentResponse(text, matchedMemories, newlyStoredFact);
+          const result = await this.generateIntelligentResponse(text, matchedMemories, newlyStoredFact);
+          let responseText = result;
+          let executionMode = this.selectedExecutionMode;
+          if (typeof result === "object" && result !== null) {
+            responseText = result.response;
+            executionMode = result.execution_mode || this.selectedExecutionMode;
+          }
           this.chatHistory.push({ role: "assistant", text: responseText });
-          this.appendMsg("HAIL Core Kernel", responseText, "assistant", matchedMemories.length, newlyStoredFact);
+          this.appendMsg("HAIL Core Kernel", responseText, "assistant", matchedMemories.length, newlyStoredFact, executionMode);
         } catch (err) {
           console.error("Response generation error:", err);
           const fallbackText = `I have received your message: "${this.escape(text)}". Synced with HAIL Core Kernel context.`;
@@ -1176,7 +1146,11 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
         if (resp.ok) {
           const data = await resp.json();
           if (data && data.response) {
-            return data.response;
+            return {
+              response: data.response,
+              model: data.model,
+              execution_mode: data.execution_mode
+            };
           }
         }
       } catch (err) {
