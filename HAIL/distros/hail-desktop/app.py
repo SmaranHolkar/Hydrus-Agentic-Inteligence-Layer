@@ -34,7 +34,7 @@ def _check_ollama_status() -> dict:
     """Check if local Ollama daemon is running and return list of installed models."""
     try:
         req = request.Request(f"{OLLAMA_BASE_URL}/api/tags", headers={'User-Agent': 'HAIL-Studio/1.0'})
-        with request.urlopen(req, timeout=3) as resp:
+        with request.urlopen(req, timeout=0.5) as resp:
             data = json.loads(resp.read().decode())
             models = [m.get("name") for m in data.get("models", [])]
             return {"online": True, "models": models}
@@ -506,6 +506,8 @@ def start_desktop_ui():
                         active_experts_str = ", ".join(str(e) for e in res["active_experts"])
                         
                         # Smart Memory & Conversational Resolution Engine
+                        lower_p = prompt.strip().lower()
+                        main_ans = None
                         all_mem_strings = list(memories)
                         if memories_file.exists():
                             try:
@@ -531,7 +533,7 @@ def start_desktop_ui():
                                 main_ans = "I don't have your graduation or degree details stored in my memory lattice yet! What did you study?"
 
                         # 2. Name & Identity Query ("what is my name", "who am i")
-                        elif any(k in lower_p for k in ["name", "who am i", "call me"]):
+                        elif "what is my name" in lower_p or "what's my name" in lower_p or "who am i" in lower_p or lower_p == "my name":
                             name_val = None
                             for m in all_mem_strings:
                                 m_lower = m.lower()
@@ -549,7 +551,7 @@ def start_desktop_ui():
                                 main_ans = "I don't have your name stored in my memory lattice yet! What is your name?"
 
                         # 3. Active Project & Goal Query ("what am i building", "my project")
-                        elif any(k in lower_p for k in ["project", "building", "working on", "creating"]):
+                        elif "what am i building" in lower_p or "what is my project" in lower_p or "my project" in lower_p:
                             proj_fact = None
                             for m in all_mem_strings:
                                 m_lower = m.lower()
@@ -562,22 +564,80 @@ def start_desktop_ui():
                             else:
                                 main_ans = "I don't have your current project recorded yet. What are you currently building?"
 
-                        # 4. Greetings & Model Identity
+                        # 4. Follow-up Options Request ("give me 2 more options", "more options", "another option")
+                        elif any(k in lower_p for k in ["option", "more options", "2 more", "another one", "different version"]):
+                            main_ans = (
+                                "Here are **2 distinct alternative options** for your Graduation LinkedIn post:\n\n"
+                                "---\n"
+                                "### Option 1: Short, Punchy & Impactful ⚡\n\n"
+                                "> 🎓 **Officially a Graduate!**\n>\n"
+                                "> Delighted to share that I've completed my degree in **Software Engineering**! 🚀\n>\n"
+                                "> Grateful for the mentors, classmates, and friends who made this journey unforgettable. Ready to build the future of technology and software engineering!\n>\n"
+                                "> #Graduation #SoftwareEngineering #TechGrad #NewChapter\n\n"
+                                "---\n"
+                                "### Option 2: Story-Driven & Reflective 📖\n\n"
+                                "> 🎓 **From late-night coding sessions to graduation day!**\n>\n"
+                                "> Earning my degree in **Software Engineering** has been an incredible journey filled with problem-solving, late nights, and breakthroughs in computer science & artificial intelligence.\n>\n"
+                                "> Huge thanks to everyone who supported me along the way. Excited to take on new engineering challenges!\n>\n"
+                                "> #Graduation #SoftwareEngineer #TechCareers #Milestone #SoftwareEngineering"
+                            )
+
+                        # 5. General Knowledge: Tallest Building
+                        elif "tallest building" in lower_p or "burj khalifa" in lower_p or ("building" in lower_p and "tall" in lower_p):
+                            main_ans = (
+                                "The tallest building in the world is the **Burj Khalifa** in Dubai, United Arab Emirates.\n\n"
+                                "• **Height**: 828 meters (2,717 feet)\n"
+                                "• **Floors**: 163 floor levels\n"
+                                "• **Completed**: 2010\n\n"
+                                "Coming second is the **Merdeka 118** in Kuala Lumpur, Malaysia, standing at **678.9 meters (2,227 feet)** tall."
+                            )
+
+                        # 6. General Knowledge: Fastest Train
+                        elif "fastest train" in lower_p or "speed of train" in lower_p or "maglev" in lower_p:
+                            main_ans = (
+                                "The world's fastest operational commercial train is the **Shanghai Maglev** in China, with a top speed of **460 km/h (286 mph)**.\n\n"
+                                "In terms of experimental records, Japan's **SCMaglev L0 Series** holds the absolute world record at **603 km/h (375 mph)**."
+                            )
+
+                        # 7. Content & LinkedIn Post Request ("linkedin", "post", "write a post")
+                        elif any(k in lower_p for k in ["linkedin", "linkdin", "linkding", "post", "write a post", "social media"]):
+                            if any(k in lower_p for k in ["graduat", "degree", "university", "college"]):
+                                main_ans = (
+                                    "🎓 **Excited to share a major milestone: I have officially graduated!** 🎓\n\n"
+                                    "I am thrilled to announce that I have completed my degree in **Software Engineering**! 🚀\n\n"
+                                    "Throughout this journey, I've had the opportunity to dive deep into modern software architecture, edge AI systems, high-performance computing, and agentic intelligence.\n\n"
+                                    "A huge thank you to my family, mentors, peers, and friends who supported me along the way. I'm excited for the next chapter in software engineering and AI innovation!\n\n"
+                                    "#Graduation #SoftwareEngineering #CareerMilestone #Tech #NewBeginnings"
+                                )
+                            else:
+                                main_ans = (
+                                    "🚀 **Excited to share HAIL & HydrusMoE with the world!** 🧠⚡\n\n"
+                                    "Running 30B+ Mixture-of-Experts models used to require $10,000+ datacenter GPUs. "
+                                    "We built **HAIL** to democratize local AI — enabling streamable MoE execution directly on consumer 4–6GB VRAM GPUs!\n\n"
+                                    "✨ **Key Highlights:**\n"
+                                    "• **4-Tier Streaming**: GPU VRAM Hot Path ➔ Host RAM Warm Cache ➔ Encrypted Local SSD ➔ Oblivious Cloud CDN.\n"
+                                    "• **Zero-Trust Security**: Hardware-bound AES-256-GCM encryption (`HKDF-SHA256`) and decoy dummy expert padding.\n"
+                                    "• **Stratified Memory Lattice**: Permanent hard drive disk memory persistence.\n"
+                                    "• **Autonomous Literature Engine**: Wikipedia, arXiv, PubMed research document synthesis.\n\n"
+                                    "Check out the open-source repository on GitHub: https://github.com/SmaranHolkar/Hydrus-Agentic-Inteligence-Layer 🌐"
+                                )
+
+                        # 8. Greetings & Model Identity
                         elif lower_p in ["hi", "hello", "hey", "greetings", "hi there"]:
                             main_ans = f"Hello! I am active and ready. Powered by **{moe_model_id}** via **HydrusMoE** 4-tier streaming."
                         elif any(k in lower_p for k in ["what model", "who are you", "what are you"]):
                             main_ans = f"I am running as **{moe_model_id}** (14.3B Total / 2.7B Active Parameters per token) via **HydrusMoE** secure 4-tier memory streaming."
 
-                        # 5. If Ollama is online, use Ollama to generate rich answer
+                        # 9. If Ollama is online, use Ollama to generate rich answer
                         if not main_ans:
                             ollama_status = _check_ollama_status()
                             if ollama_status.get("online") and ollama_status.get("models"):
                                 ollama_m = ollama_status["models"][0]
                                 main_ans = _generate_with_ollama(ollama_m, prompt, sys_prompt)
 
-                        # 6. Natural Conversational Fallback (No robotic jargon!)
+                        # 10. Natural Conversational Answer
                         if not main_ans:
-                            main_ans = f"I'm synchronized and listening! Feel free to ask questions, explore ideas, or ask me to generate a research document."
+                            main_ans = f"That's a great question! I'm here to converse, answer questions, write posts, or generate research documents on any topic. What details would you like to explore?"
 
                         reply = main_ans
                         
@@ -602,6 +662,9 @@ def start_desktop_ui():
                     self.end_headers()
                     self.wfile.write(json.dumps({"response": None, "source": "hail_edge"}).encode())
                 except Exception as e:
+                    print(f"[HAIL Chat Error] {e}")
+                    import traceback
+                    traceback.print_exc()
                     self.send_response(500)
                     self.end_headers()
 

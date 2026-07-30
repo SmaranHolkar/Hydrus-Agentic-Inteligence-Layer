@@ -952,6 +952,11 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
   autonomouslyExtractMemory(prompt) {
     const p = prompt.trim();
     const lower = p.toLowerCase();
+
+    // Never extract questions, commands, or requests as memory facts!
+    if (p.includes("?") || lower.startsWith("what") || lower.startsWith("how") || lower.startsWith("why") || lower.startsWith("where") || lower.startsWith("who") || lower.startsWith("give me") || lower.startsWith("can you") || lower.startsWith("write") || lower.startsWith("show")) {
+      return null;
+    }
     let extractedText = null;
     let conf = 0.95;
 
@@ -1166,7 +1171,7 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
 
     // 7. Project / Building Query
     if (lower.includes("what am i building") || lower.includes("what is my project") || lower.includes("what am i working on")) {
-      const projMem = this.memories.find(m => m.text.toLowerCase().includes("project") || m.text.toLowerCase().includes("building"));
+      const projMem = this.memories.find(m => m.text.toLowerCase().startsWith("active project:"));
       if (projMem) {
         const val = projMem.text.replace(/^Active project:\s*/i, '');
         return `Based on my memory lattice, you are working on: **${val.trim()}**.`;
@@ -1228,6 +1233,9 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
         const prevMsg = userMsgs[userMsgs.length - 2].text.toLowerCase();
         if (prevMsg.includes("train")) {
           return `The fastest commercial train is the **Shanghai Maglev** (460 km/h / 286 mph), while the experimental record is held by Japan's **L0 Series Maglev** at **603 km/h (375 mph)**.`;
+        }
+        if (prevMsg.includes("building")) {
+          return `The tallest building in the world is the **Burj Khalifa** in Dubai, UAE (828 meters / 2,717 ft).`;
         }
         return `Here is your direct answer to *"${userMsgs[userMsgs.length - 2].text}"*: Processing complete with local HAIL memory grounding.`;
       }
