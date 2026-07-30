@@ -1041,7 +1041,8 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
    * Recall memories relevant to current query (keyword + semantic match)
    */
   recallRelevantMemories(query) {
-    const tokens = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+    const stopWords = new Set(["the", "was", "what", "you", "and", "are", "who", "how", "for", "about", "your", "that", "this", "with", "from", "they", "been", "have", "has", "had", "can", "will", "would", "should", "could", "there", "their", "them", "these", "those", "here", "then", "than"]);
+    const tokens = query.toLowerCase().split(/\s+/).filter(t => t.length > 2 && !stopWords.has(t));
     if (tokens.length === 0) return [];
 
     return this.memories.filter(m => {
@@ -1087,15 +1088,17 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
 
     const isDocTrigger = lower.includes("doc") || lower.includes("document") || lower.includes("history of") || lower.includes("paper on");
 
-    if (activeMoEModel && !isDocTrigger && !lower.includes("what did i ask") && !lower.includes("my name is") && !lower.includes("show my memory") && !lower.includes("linkedin") && !lower.includes("linkdin") && !lower.includes("post") && !lower.includes("graduat")) {
+    // Always attempt backend chat synthesis first to handle memories/GK/post gen natively
+    if (!isDocTrigger) {
       try {
         const memStrings = recalledMemories.map(m => m.text);
+        const modelParam = activeMoEModel ? `moe:${activeMoEModel}` : (activeOllamaModel || "");
         const resp = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: userPrompt,
-            model: `moe:${activeMoEModel}`,
+            model: modelParam,
             memories: memStrings,
             execution_mode: this.selectedExecutionMode || "fast"
           })
@@ -1107,31 +1110,7 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
           }
         }
       } catch (err) {
-        console.warn("HydrusMoE chat fetch warning:", err);
-      }
-    }
-
-    if (activeOllamaModel && !isDocTrigger && !lower.includes("what did i ask") && !lower.includes("my name is") && !lower.includes("show my memory")) {
-      try {
-        const memStrings = recalledMemories.map(m => m.text);
-        const resp = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: userPrompt,
-            model: activeOllamaModel,
-            memories: memStrings,
-            execution_mode: this.selectedExecutionMode || "fast"
-          })
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data && data.response) {
-            return data.response;
-          }
-        }
-      } catch (err) {
-        console.warn("Ollama chat fetch warning:", err);
+        console.warn("HAIL chat fetch warning:", err);
       }
     }
 
