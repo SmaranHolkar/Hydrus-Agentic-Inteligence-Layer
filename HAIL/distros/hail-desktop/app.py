@@ -516,6 +516,7 @@ def start_desktop_ui():
                     prompt = data.get("prompt", "")
                     model = data.get("model", "")
                     memories = data.get("memories", [])
+                    execution_mode = data.get("execution_mode", "fast")
                     
                     sys_prompt = "You are HAIL Core, an edge-native cognitive AI assistant. You are helpful, precise, and human-friendly."
                     if memories:
@@ -678,7 +679,7 @@ def start_desktop_ui():
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
-                        self.wfile.write(json.dumps({"response": reply, "source": "hydrusmoe", "model": moe_model_id}).encode())
+                        self.wfile.write(json.dumps({"response": reply, "source": "hydrusmoe", "model": moe_model_id, "execution_mode": execution_mode}).encode())
                         return
 
                     if model:

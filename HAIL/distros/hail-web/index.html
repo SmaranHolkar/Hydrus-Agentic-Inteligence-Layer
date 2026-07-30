@@ -28,15 +28,26 @@
         <a class="nav-tab" data-view="doc">DOC PREVIEW</a>
       </nav>
 
-      <!-- Right Unified Model Selector & Settings -->
+      <!-- Right Unified Model Selector, Execution Mode & Settings -->
       <div class="model-selector-box" style="display: flex; gap: 0.5rem; align-items: center;">
         <div id="modelContainer" style="display: flex; align-items: center; gap: 0.35rem; font-size: 11px; background: rgba(255,255,255,0.7); padding: 0.25rem 0.6rem; border-radius: 6px; border: 1px solid var(--launch-border);">
           <span id="modelStatusDot" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e;" title="Active Engine Status"></span>
           <span style="color: var(--launch-ink); font-weight: 600; font-size: 11px;">Model:</span>
-          <select id="unifiedModelSelect" class="select-model" style="min-width: 240px; padding: 0.2rem 0.5rem; font-size: 11px; font-weight: 500; cursor: pointer;">
+          <select id="unifiedModelSelect" class="select-model" style="min-width: 200px; padding: 0.2rem 0.5rem; font-size: 11px; font-weight: 500; cursor: pointer;">
             <option value="">Loading Models...</option>
           </select>
         </div>
+
+        <!-- Mode Selector: Fast, Safe, Eval -->
+        <div id="modeContainer" style="display: flex; align-items: center; gap: 0.35rem; font-size: 11px; background: rgba(255,255,255,0.7); padding: 0.25rem 0.6rem; border-radius: 6px; border: 1px solid var(--launch-border);">
+          <span style="color: var(--launch-ink); font-weight: 600; font-size: 11px;">Flag:</span>
+          <select id="executionModeSelect" class="select-model" style="min-width: 130px; padding: 0.2rem 0.5rem; font-size: 11px; font-weight: 600; cursor: pointer; color: #1e1b4b;">
+            <option value="fast" selected>⚡ Fast Mode</option>
+            <option value="safe">🛡️ Safe Mode</option>
+            <option value="eval">🧪 Eval Mode</option>
+          </select>
+        </div>
+
         <button id="clearMemoriesBtn" class="nav-tab" style="padding: 0.35rem 0.65rem; font-size: 11px;">Clear Memory</button>
       </div>
     </header>

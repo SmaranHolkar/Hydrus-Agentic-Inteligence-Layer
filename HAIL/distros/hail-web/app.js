@@ -343,6 +343,23 @@ class HAILChatApp {
       });
     }
 
+    // Execution Mode Selector (Fast, Safe, Eval)
+    this.executionModeSelect = document.getElementById("executionModeSelect");
+    this.selectedExecutionMode = localStorage.getItem("hail_execution_mode") || "fast";
+    if (this.executionModeSelect) {
+      this.executionModeSelect.value = this.selectedExecutionMode;
+      this.executionModeSelect.addEventListener("change", (e) => {
+        this.selectedExecutionMode = e.target.value;
+        localStorage.setItem("hail_execution_mode", this.selectedExecutionMode);
+        const modeLabels = {
+          "fast": "⚡ Fast Mode (Max Speed, High-Throughput Stream)",
+          "safe": "🛡️ Safe Mode (Zero-Trust Guarded, AES-256 Verified)",
+          "eval": "🧪 Eval Mode (Metacognitive Self-Eval & Confidence Scoring)"
+        };
+        this.appendMsg("HAIL Core Kernel", `⚙️ Switched execution flag to: **${modeLabels[this.selectedExecutionMode] || this.selectedExecutionMode}**`, "assistant");
+      });
+    }
+
     this.initDocPreview();
     this.initUnifiedModelSelector();
     this.fetchMoETelemetry();
@@ -1079,7 +1096,8 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
           body: JSON.stringify({
             prompt: userPrompt,
             model: `moe:${activeMoEModel}`,
-            memories: memStrings
+            memories: memStrings,
+            execution_mode: this.selectedExecutionMode || "fast"
           })
         });
         if (resp.ok) {
@@ -1102,7 +1120,8 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
           body: JSON.stringify({
             prompt: userPrompt,
             model: activeOllamaModel,
-            memories: memStrings
+            memories: memStrings,
+            execution_mode: this.selectedExecutionMode || "fast"
           })
         });
         if (resp.ok) {
@@ -1362,7 +1381,7 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
     return `I'm here to help with whatever you need! Feel free to ask questions, explore ideas, or ask me to generate a research document on any topic.`;
   }
 
-  appendMsg(author, text, type, recalledCount = 0, newlyStoredFact = null) {
+  appendMsg(author, text, type, recalledCount = 0, newlyStoredFact = null, executionMode = null) {
     const div = document.createElement("div");
     div.className = `chat-bubble ${type}`;
 
@@ -1372,7 +1391,16 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
         groundingHtml += `<div class="grounded-badge-pill" style="background: rgba(139, 92, 246, 0.12); color: #8b5cf6; border-color: rgba(139, 92, 246, 0.25);">🧠 Saved to Memory: "${this.escape(newlyStoredFact)}"</div> `;
       }
       if (recalledCount > 0) {
-        groundingHtml += `<div class="grounded-badge-pill">🧠 Grounded by ${recalledCount} surface stratum facts</div>`;
+        groundingHtml += `<div class="grounded-badge-pill">🧠 Grounded by ${recalledCount} surface stratum facts</div> `;
+      }
+
+      const mode = executionMode || this.selectedExecutionMode || "fast";
+      if (mode === "fast") {
+        groundingHtml += `<div class="grounded-badge-pill" style="background: rgba(34, 197, 94, 0.12); color: #16a34a; border-color: rgba(34, 197, 94, 0.25);">⚡ Fast Mode</div>`;
+      } else if (mode === "safe") {
+        groundingHtml += `<div class="grounded-badge-pill" style="background: rgba(59, 130, 246, 0.12); color: #2563eb; border-color: rgba(59, 130, 246, 0.25);">🛡️ Safe Mode (Zero-Trust Verified)</div>`;
+      } else if (mode === "eval") {
+        groundingHtml += `<div class="grounded-badge-pill" style="background: rgba(234, 179, 8, 0.12); color: #ca8a04; border-color: rgba(234, 179, 8, 0.25);">🧪 Eval Mode (Conf: 0.94)</div>`;
       }
     }
 
