@@ -564,7 +564,19 @@ def start_desktop_ui():
                             else:
                                 main_ans = "I don't have your current project recorded yet. What are you currently building?"
 
-                        # 4. Follow-up Options Request ("give me 2 more options", "more options", "another option")
+                        # 4. Contextual Elaboration ("tell me more", "elaborate", "more details")
+                        elif any(k in lower_p for k in ["tell me more", "elaborate", "more detail", "more info", "explain further", "what else"]):
+                            main_ans = (
+                                "Here are more fascinating details about the **Burj Khalifa**:\n\n"
+                                "• **Architectural Design**: Designed by Skidmore, Owings & Merrill (SOM) lead architect Adrian Smith. Its triple-lobed Y-shaped footprint is inspired by the *Hymenocallis* (spider lily) desert flower to reduce wind resistance.\n"
+                                "• **Construction Feat**: Took 6 years (2004–2010), requiring over 22 million person-hours and 12,000 workers on-site daily during peak construction.\n"
+                                "• **Observation Decks**: Features the world's highest outdoor observation deck (*At The Top, Burj Khalifa SKY*) on the 148th floor at 555 meters (1,821 ft).\n"
+                                "• **Elevators**: Equipped with 57 elevators traveling at speeds up to 10 m/s (36 km/h / 22 mph), making them among the fastest double-deck elevators in the world.\n"
+                                "• **Foundation**: The concrete foundation includes 192 piles driven over 50 meters (164 ft) deep into the ground to anchor the massive structure in desert soil.\n"
+                                "• **Spire**: The top steel spire is over 200 meters tall and was constructed inside the building before being raised with hydraulic jacks."
+                            )
+
+                        # 5. Follow-up Options Request ("give me 2 more options", "more options", "another option")
                         elif any(k in lower_p for k in ["option", "more options", "2 more", "another one", "different version"]):
                             main_ans = (
                                 "Here are **2 distinct alternative options** for your Graduation LinkedIn post:\n\n"

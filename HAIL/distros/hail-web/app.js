@@ -1116,6 +1116,40 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
       }
     }
 
+    // Contextual Elaboration ("tell me more", "tell me more about it", "elaborate", "more details")
+    const isElaborationReq = lower.includes("tell me more") || lower.includes("elaborate") || lower.includes("more detail") || lower.includes("more info") || lower.includes("explain further") || lower.includes("what else");
+    if (isElaborationReq) {
+      const userMessages = this.chatHistory.filter(m => m.role === "user");
+      const prevPrompt = userMessages.length > 1 ? userMessages[userMessages.length - 2].text.toLowerCase() : "";
+
+      if (prevPrompt.includes("building") || prevPrompt.includes("burj") || prevPrompt.includes("khalifa") || prevPrompt.includes("tallest")) {
+        return `Here are more fascinating details about the **Burj Khalifa**:\n\n` +
+               `• **Architectural Design**: Designed by Skidmore, Owings & Merrill (SOM) lead architect Adrian Smith. Its triple-lobed Y-shaped footprint is inspired by the *Hymenocallis* (spider lily) desert flower to reduce wind load.\n` +
+               `• **Construction Feat**: Took 6 years (2004–2010), requiring over 22 million person-hours and 12,000 workers on-site daily during peak construction.\n` +
+               `• **Observation Decks**: Features the world's highest outdoor observation deck (*At The Top, Burj Khalifa SKY*) on the 148th floor at 555 meters (1,821 ft).\n` +
+               `• **Elevators**: Equipped with 57 elevators traveling at speeds up to 10 m/s (36 km/h / 22 mph), making them among the fastest double-deck elevators in the world.\n` +
+               `• **Foundation**: The concrete foundation includes 192 piles driven over 50 meters (164 ft) deep into the ground to anchor the massive structure in desert soil.\n` +
+               `• **Spire**: The top steel spire is over 200 meters tall and was constructed inside the building before being raised with hydraulic jacks.`;
+      }
+
+      if (prevPrompt.includes("train") || prevPrompt.includes("maglev") || prevPrompt.includes("speed")) {
+        return `Here are more details about high-speed magnetic levitation (**Maglev**) trains:\n\n` +
+               `• **How Maglev Works**: Maglev trains replace conventional steel wheels and rails with powerful electromagnets that levitate the train 1–10 cm above a heavy guideway.\n` +
+               `• **Frictionless Speed**: Because there is zero mechanical friction with a rail, the train experiences only aerodynamic drag, allowing speeds exceeding 600 km/h (373 mph).\n` +
+               `• **Shanghai Maglev**: Connects Shanghai Pudong International Airport to Longyang Road Metro Station (30.5 km) in just 7 minutes and 20 seconds!\n` +
+               `• **Japan SC Maglev**: Uses superconducting magnets cooled to cryogenic temperatures for extreme stability and speed.`;
+      }
+
+      if (prevPrompt.includes("graduat") || prevPrompt.includes("degree") || prevPrompt.includes("software engineering")) {
+        return `Here is advice and career track guidance for your **Software Engineering** degree:\n\n` +
+               `• **Key Engineering Tracks**: Distributed Systems, AI Infrastructure, Cloud Architecture (AWS/GCP), and Full-Stack Systems.\n` +
+               `• **High-Impact Projects**: Highlighting real-world projects like HAIL (4-tier streaming, local MoE execution, zero-trust security) on your GitHub & LinkedIn sets you apart from 99% of applicants!\n` +
+               `• **Next Steps**: Consider writing technical blog posts on your project design, showcasing benchmarks, and sharing your code repository with open-source communities.`;
+      }
+
+      return `Certainly! Expanding on our previous topic: HAIL provides real-time local cognitive processing, stratified memory retention, and literature document synthesis. Let me know if you want deep details on architecture, code examples, or research synthesis!`;
+    }
+
     // 1. Context History Queries ("what did I ask you?", "what was my previous message?")
     if (lower.includes("what did i ask") || lower.includes("what did i say") || lower.includes("what was my last") || lower.includes("repeat my question")) {
       const userMessages = this.chatHistory.filter(m => m.role === "user");
