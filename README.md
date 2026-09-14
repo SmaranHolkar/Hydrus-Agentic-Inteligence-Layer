@@ -1,4 +1,4 @@
-# HAIL: Holistic Agentic Intelligence & HydrusMoE Ecosystem
+# HAIL: Hydrus Agentic Intelligence & HydrusMoE Ecosystem
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://www.python.org/)
