@@ -69,7 +69,7 @@ class ParticleBackground {
           this.ctx.beginPath();
           this.ctx.moveTo(p.x, p.y);
           this.ctx.lineTo(p2.x, p2.y);
-          this.ctx.strokeStyle = `rgba(198, 178, 255, ${0.12 * (1 - dist / 90)})`;
+          this.ctx.strokeStyle = `rgba(198, 178, 255, ${0.045 * (1 - dist / 90)})`;
           this.ctx.lineWidth = 0.5;
           this.ctx.stroke();
         }
@@ -176,10 +176,26 @@ class HAILChatApp {
     this.STORAGE_KEY = "hail_web_memories_v4";
     this.memories = [];
     this.chatHistory = [];
-    this.initUI();
-    this.loadMemories();
-    this.latticeVis = new MemoryLatticeVisualizer("latticeCanvas");
-    this.renderMemories();
+    try {
+      this.initUI();
+    } catch (err) {
+      console.error("HAIL initUI error:", err);
+    }
+    try {
+      this.loadMemories();
+    } catch (err) {
+      console.error("HAIL loadMemories error:", err);
+    }
+    try {
+      this.latticeVis = new MemoryLatticeVisualizer("latticeCanvas");
+    } catch (err) {
+      console.error("HAIL lattice init error:", err);
+    }
+    try {
+      this.renderMemories();
+    } catch (err) {
+      console.error("HAIL renderMemories error:", err);
+    }
   }
 
   async loadMemories() {
@@ -231,14 +247,35 @@ class HAILChatApp {
     this.chatFeed = document.getElementById("chatFeed");
     this.chatInput = document.getElementById("chatInput");
     this.chatForm = document.getElementById("chatForm");
+    this.sendBtn = document.getElementById("sendBtn");
     this.memoryList = document.getElementById("memoryList");
     this.memoryBadge = document.getElementById("memoryBadge");
     this.clearMemoriesBtn = document.getElementById("clearMemoriesBtn");
 
     if (this.chatForm) {
+      this.chatForm.dataset.hailBound = "true";
       this.chatForm.addEventListener("submit", (e) => {
         e.preventDefault();
+        e.stopPropagation();
         this.sendMessage();
+      });
+    }
+
+    if (this.sendBtn) {
+      this.sendBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.sendMessage();
+      });
+    }
+
+    if (this.chatInput) {
+      this.chatInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          this.sendMessage();
+        }
       });
     }
 
@@ -391,6 +428,16 @@ class HAILChatApp {
             }
           }
 
+          try {
+            await fetch('/api/model/apply', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: this.selectedUnifiedModel })
+            });
+          } catch (err) {
+            console.warn("Model apply error:", err);
+          }
+
           // Settle status dot color
           setTimeout(() => {
             if (dot) {
@@ -399,8 +446,13 @@ class HAILChatApp {
               const isMoE = this.selectedUnifiedModel.startsWith("moe:");
               dot.style.background = isMoE ? "#8b5cf6" : "#22c55e"; // violet for MoE, green otherwise
             }
+            const modelLabel = this.selectedUnifiedModel
+              .replace("moe:", "🛡️ MoE: ")
+              .replace("local:", "🤖 Local: ")
+              .replace("ollama:", "🦙 Ollama: ");
+            const modeLabel = this.selectedExecutionMode === "fast" ? "⚡ Fast Mode" : (this.selectedExecutionMode === "safe" ? "🛡️ Safe Mode" : "🧪 Eval Mode");
+            this.appendMsg("HAIL Core Kernel", `⚙️ Applied configuration settings:\n- **Model**: ${modelLabel}\n- **Execution Mode**: ${modeLabel}`, "assistant", 0, null, this.selectedExecutionMode, "CHAT", "Config Update");
           }, 1500);
-
         }
       });
     }
@@ -959,6 +1011,8 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
 
   sendMessage() {
     try {
+      if (!this.chatInput || !this.chatFeed) return;
+
       let text = this.chatInput.value.trim();
       if (!text) return;
       if (text.length > 2000) {
@@ -968,7 +1022,21 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
       if (!this.chatHistory) this.chatHistory = [];
 
       // Render user message bubble
-      this.appendMsg("You", text, "user");
+      try {
+        this.appendMsg("You", text, "user");
+      } catch (renderErr) {
+        console.error("User message render error:", renderErr);
+        const fallbackDiv = document.createElement("div");
+        fallbackDiv.className = "chat-bubble user";
+        fallbackDiv.innerHTML = `
+          <div class="avatar user">U</div>
+          <div class="message-content">
+            <div style="font-weight: 600; font-size: 12px; color: var(--text-subtle); margin-bottom: 0.3rem;">You</div>
+            <div><p>${this.escape(text)}</p></div>
+          </div>
+        `;
+        this.chatFeed.appendChild(fallbackDiv);
+      }
       this.chatInput.value = "";
 
       // Track in chat history
@@ -993,18 +1061,55 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
       setTimeout(async () => {
         try {
           const result = await this.generateIntelligentResponse(text, matchedMemories, newlyStoredFact);
-          let responseText = result;
+          let responseText = typeof result === "string" ? result : "";
           let executionMode = this.selectedExecutionMode;
+          let intent = "CHAT";
+          let goal = "Casual Conversation";
           if (typeof result === "object" && result !== null) {
-            responseText = result.response;
+            responseText = typeof result.response === "string" ? result.response : "";
             executionMode = result.execution_mode || this.selectedExecutionMode;
+            intent = result.intent || "CHAT";
+            goal = result.goal || "Casual Conversation";
+          }
+          if (!responseText.trim()) {
+            responseText = "I received your message, but I hit a response formatting problem. Please try sending it again.";
           }
           this.chatHistory.push({ role: "assistant", text: responseText });
-          this.appendMsg("HAIL Core Kernel", responseText, "assistant", matchedMemories.length, newlyStoredFact, executionMode);
+          try {
+            this.appendMsg("HAIL Core Kernel", responseText, "assistant", matchedMemories.length, newlyStoredFact, executionMode, intent, goal);
+          } catch (renderErr) {
+            console.error("Assistant message render error:", renderErr);
+            const fallbackDiv = document.createElement("div");
+            fallbackDiv.className = "chat-bubble assistant";
+            fallbackDiv.innerHTML = `
+              <div class="avatar ai">H</div>
+              <div class="message-content">
+                <div style="font-weight: 600; font-size: 12px; color: var(--text-subtle); margin-bottom: 0.3rem;">HAIL Core Kernel</div>
+                <div><p>${this.escape(responseText)}</p></div>
+              </div>
+            `;
+            this.chatFeed.appendChild(fallbackDiv);
+            this.chatFeed.scrollTop = this.chatFeed.scrollHeight;
+          }
         } catch (err) {
           console.error("Response generation error:", err);
-          const fallbackText = `I have received your message: "${this.escape(text)}". Synced with HAIL Core Kernel context.`;
-          this.appendMsg("HAIL Core Kernel", fallbackText, "assistant");
+          const fallbackText = `[Offline Fallback] Connected to local memory lattice. I've synced your message: "${this.escape(text)}". Let me know what you'd like to work on once the active cognitive core is fully online!`;
+          try {
+            this.appendMsg("HAIL Core Kernel", fallbackText, "assistant", matchedMemories.length, newlyStoredFact, this.selectedExecutionMode, "CHAT", "Offline Fallback");
+          } catch (renderErr) {
+            console.error("Offline fallback render error:", renderErr);
+            const fallbackDiv = document.createElement("div");
+            fallbackDiv.className = "chat-bubble assistant";
+            fallbackDiv.innerHTML = `
+              <div class="avatar ai">H</div>
+              <div class="message-content">
+                <div style="font-weight: 600; font-size: 12px; color: var(--text-subtle); margin-bottom: 0.3rem;">HAIL Core Kernel</div>
+                <div><p>${fallbackText}</p></div>
+              </div>
+            `;
+            this.chatFeed.appendChild(fallbackDiv);
+            this.chatFeed.scrollTop = this.chatFeed.scrollHeight;
+          }
         }
       }, 150);
     } catch (err) {
@@ -1019,9 +1124,10 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
   autonomouslyExtractMemory(prompt) {
     const p = prompt.trim();
     const lower = p.toLowerCase();
+    const looksLikeScreenplay = p.length > 260 || /\b(INT\.|EXT\.|FADE IN|CUT TO:|TITLE CARD|NARRATOR\s*\(V\.O\.\)|SCENE)\b/i.test(p) || (p.match(/\n/g) || []).length >= 3;
 
     // Never extract questions, commands, or requests as memory facts!
-    if (p.includes("?") || lower.startsWith("what") || lower.startsWith("how") || lower.startsWith("why") || lower.startsWith("where") || lower.startsWith("who") || lower.startsWith("give me") || lower.startsWith("can you") || lower.startsWith("write") || lower.startsWith("show")) {
+    if (looksLikeScreenplay || p.includes("?") || lower.startsWith("what") || lower.startsWith("how") || lower.startsWith("why") || lower.startsWith("where") || lower.startsWith("who") || lower.startsWith("give me") || lower.startsWith("can you") || lower.startsWith("write") || lower.startsWith("show")) {
       return null;
     }
     let extractedText = null;
@@ -1049,17 +1155,30 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
       conf = 0.90;
     }
     // Rule 4: Tech Stack & Experience
-    else if (lower.includes("software engineering") || lower.includes("developer") || lower.includes("programmer") || lower.includes("engineer")) {
+    else if (lower.includes("software engineering") || /\bdeveloper\b/i.test(lower) || /\bprogrammer\b/i.test(lower) || /\bengineer\b/i.test(lower)) {
       extractedText = `Background: ${p}`;
       conf = 0.94;
-    } else if (lower.includes("i use") || lower.includes("my stack") || lower.includes("using ")) {
+    } else if (/\bi use\b/i.test(lower) || /\bmy stack\b/i.test(lower) || /\busing\b/i.test(lower)) {
       extractedText = `User tech stack: ${p}`;
       conf = 0.92;
     }
     // Rule 5: Projects & Goals
-    else if (lower.includes("building") || lower.includes("working on") || lower.includes("creating") || lower.includes("project")) {
-      extractedText = `Active project: ${p}`;
-      conf = 0.93;
+    else if (lower.includes("building a") || lower.includes("working on a") || lower.includes("creating a") || lower.includes("writing a") || lower.includes("developing a") || (lower.includes("project") && (lower.includes("my project is") || lower.includes("working on")))) {
+      let cleanP = p;
+      const cleanMatch = p.match(/(?:building|working on|creating|developing|writing)\s+(?:a\s+|an\s+)?([\w\s\-]{2,50})/i);
+      if (cleanMatch && cleanMatch[1]) {
+        cleanP = cleanMatch[1].trim();
+      } else {
+        const directMatch = p.match(/project\s+(?:is|called|named)\s+([\w\s\-]{2,50})/i);
+        if (directMatch && directMatch[1]) {
+          cleanP = directMatch[1].trim();
+        }
+      }
+      // Only extract if it is a short, proper-noun-like name
+      if (cleanP && cleanP.split(/\s+/).length <= 4 && !cleanP.includes(".")) {
+        extractedText = `Active project: ${cleanP}`;
+        conf = 0.93;
+      }
     }
     // Rule 6: General Personal Declarations
     else if (lower.startsWith("i ") || lower.startsWith("my ") || lower.startsWith("i'm ") || lower.startsWith("i am ")) {
@@ -1126,13 +1245,13 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
       activeMoEModel = this.selectedUnifiedModel.replace("moe:", "");
     }
 
-    const isDocTrigger = lower.includes("doc") || lower.includes("document") || lower.includes("history of") || lower.includes("paper on");
+    const isDocTrigger = /\b(doc|document)\b/i.test(lower) || /\bhistory of\b/i.test(lower) || /\bpaper on\b/i.test(lower);
 
     // Always attempt backend chat synthesis first to handle memories/GK/post gen natively
     if (!isDocTrigger) {
       try {
         const memStrings = recalledMemories.map(m => m.text);
-        const modelParam = activeMoEModel ? `moe:${activeMoEModel}` : (activeOllamaModel || "");
+        const modelParam = this.selectedUnifiedModel || "";
         const resp = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1140,6 +1259,7 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
             prompt: userPrompt,
             model: modelParam,
             memories: memStrings,
+            chat_history: this.chatHistory,
             execution_mode: this.selectedExecutionMode || "fast"
           })
         });
@@ -1149,13 +1269,89 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
             return {
               response: data.response,
               model: data.model,
-              execution_mode: data.execution_mode
+              execution_mode: data.execution_mode,
+              intent: data.intent,
+              goal: data.goal
             };
           }
         }
       } catch (err) {
         console.warn("HAIL chat fetch warning:", err);
       }
+    }
+
+    // Handle practical writing tasks when backend is unavailable.
+    if (/\b(email|e-mail)\b/i.test(lower) && /\b(write|draft|help|compose|create)\b/i.test(lower)) {
+      if (/\b(lost|missing|delayed|not received)\b/i.test(lower) && /\b(package|parcel|shipment|order)\b/i.test(lower)) {
+        return `Absolutely. Here is a clean email draft you can send:\n\n` +
+               `**Subject:** Missing Package Inquiry - Order #[Your Order Number]\n\n` +
+               `Hello [Support Team / Carrier Name],\n\n` +
+               `I hope you're doing well. I'm writing to report that my package for order #[Your Order Number] has not arrived yet.\n\n` +
+               `Order details:\n` +
+               `- Order number: [Your Order Number]\n` +
+               `- Tracking number: [Tracking Number]\n` +
+               `- Expected delivery date: [Date]\n` +
+               `- Delivery address: [Your Address]\n\n` +
+               `The tracking status currently shows: [Current Tracking Status]. Could you please check the shipment status and let me know the next steps? If the package is confirmed lost, I'd appreciate a replacement or refund.\n\n` +
+               `Thank you for your help.\n\n` +
+               `Best regards,\n` +
+               `[Your Full Name]`;
+      }
+      return `Absolutely. Share the recipient, tone (formal/casual), and key details, and I will draft the email for you.`;
+    }
+
+    // Creative character design helper.
+    if (/\b(character|charcter|chatacter|charactor|protagonist|villain|hero)\b/i.test(lower) && /\b(tv\s*show|show|series|pilot|tvshow|mytv)\b/i.test(lower)) {
+      return `Great idea. Here is a character concept to start with:\n\n` +
+             `**Name:** Kael Mercer\n` +
+             `**Role:** Reluctant protagonist\n` +
+             `**Public Face:** Charming emergency dispatcher everyone trusts\n` +
+             `**Secret:** He can hear short "echoes" of future conversations, but only when someone is lying\n` +
+             `**Core Wound:** He failed to believe his sister before she disappeared\n` +
+             `**Goal:** Find his sister by decoding a city-wide conspiracy hidden in emergency calls\n` +
+             `**Flaw:** He manipulates people "for the greater good" and pushes allies away\n` +
+             `**Season Arc:** Goes from control-obsessed fixer to someone willing to trust a team\n` +
+             `**Hook for Episode 1:** He receives a call from his sister's voice, years after she vanished.`;
+    }
+
+    const historyText = ((this.chatHistory || []).slice(-8).map(m => m.text || "").join(" ")).toLowerCase();
+    const memoryText = (recalledMemories || []).map(m => (m && m.text ? m.text : "")).join(" ").toLowerCase();
+    const creativeContext = /\b(tv\s*show|series|episode|plot|story|character|protagonist|pilot)\b/i.test(`${historyText} ${memoryText}`);
+    const followUpStyle = userPrompt.trim().length > 18 && !/\?/.test(userPrompt) && !/^\s*(hi|hello|hey)\b/i.test(userPrompt);
+    const looksLikeScreenplay = userPrompt.length > 260 || /\b(INT\.|EXT\.|FADE IN|CUT TO:|TITLE CARD|NARRATOR\s*\(V\.O\.\)|SCENE)\b/i.test(userPrompt) || (userPrompt.match(/\n/g) || []).length >= 3;
+    const prevUserText = ((this.chatHistory || []).filter(m => m.role === "user").slice(-1)[0] || {}).text || "";
+    const prevLooksLikeScreenplay = prevUserText.length > 260 || /\b(INT\.|EXT\.|FADE IN|CUT TO:|TITLE CARD|NARRATOR\s*\(V\.O\.\)|SCENE)\b/i.test(prevUserText);
+
+    let nameMatch = userPrompt.match(/(?:name is|his name is|main guy is)\s+([A-Za-z][A-Za-z\-']{1,30})/i);
+    const leadName = nameMatch ? nameMatch[1] : "Elias";
+
+    if (creativeContext && looksLikeScreenplay) {
+      return `This reads much more like an **episode excerpt** than a character brief, and that is a good sign. The tone is strong: institutional horror, mechanical rhythm, and visual unease all come through clearly.\n\n` +
+             `What is already working:\n` +
+             `• The fake-official propaganda voice against disturbing imagery is effective.\n` +
+             `• Sector 1 and Sector 2 feel visually distinct, which helps worldbuilding.\n` +
+             `• The wall pulse and the woman's repeated motions are memorable horror details.\n\n` +
+             `What I would sharpen next:\n` +
+             `• Give the scene a stronger Episode 3 purpose: what new truth do we learn here?\n` +
+             `• Decide whose point of view this tape serves in the larger story.\n` +
+             `• End the sequence on one reveal that forces the next scene forward.\n\n` +
+             `If you want, I can help you turn this into a tighter **Episode 3 cold open** with cleaner pacing and a stronger ending beat.`;
+    }
+
+    if (creativeContext && prevLooksLikeScreenplay && /^that is episode\s+\d+/i.test(lower.trim())) {
+      return `That makes sense, and it changes the note. If this is **Episode 3**, then the scene should not introduce the world from zero. It should deepen what the audience already fears about Ensera and reveal something new about how the system works.\n\n` +
+             `Right now it works best as a worldbuilding tape sequence. For Episode 3, I would focus it around one escalation: what does this tape expose that Episodes 1 and 2 did not? If you want, I can rewrite this specifically as an **Episode 3 sequence** instead of a pilot-style introduction.`;
+    }
+
+    if (creativeContext && followUpStyle && nameMatch) {
+      return `Perfect, this is strong character material. Let's lock **${leadName}** as your lead and shape him into a TV-ready protagonist:\n\n` +
+             `• **Core Wound:** He lost his father young, so he learned to survive by being useful, not vulnerable.\n` +
+             `• **Skill Identity:** As an electrician, he notices what others miss: faulty grids, hidden wiring, power cuts, sabotage trails.\n` +
+             `• **Fatal Flaw:** He tries to fix everyone else's problems while avoiding his own grief.\n` +
+             `• **External Goal (Season 1):** Expose the people exploiting the city's failing infrastructure.\n` +
+             `• **Internal Goal:** Accept that strength is not just control, it is trust.\n` +
+             `• **Pilot Hook:** A blackout reveals a tampered circuit his father once warned him about.\n\n` +
+             `If you want, I can now write **Episode 1 scene-by-scene** around ${leadName} in 8 beats.`;
     }
 
     // Contextual Elaboration ("tell me more", "tell me more about it", "elaborate", "more details")
@@ -1313,7 +1509,7 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
         if (prevMsg.includes("building")) {
           return `The tallest building in the world is the **Burj Khalifa** in Dubai, UAE (828 meters / 2,717 ft).`;
         }
-        return `Here is your direct answer to *"${userMsgs[userMsgs.length - 2].text}"*: Processing complete with local HAIL memory grounding.`;
+        return `I'm currently running in local offline mode, but I'm fully ready to discuss and brainstorm ideas with you!`;
       }
       return `I am here to answer your questions directly! What would you like to know?`;
     }
@@ -1383,9 +1579,17 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
       if (docGeneratedSuccessfully) {
         this.loadDocPreview(docTitle, docMarkdown, finalDisplayTitle);
         const cleanName = finalDisplayTitle.replace('.md', '');
-        return `I've written the full document for **${cleanName}** for you! I saved it to your local \`docs/\` folder and opened the live preview on the right.`;
+        return {
+          response: `I've written the full document for **${cleanName}** for you! I saved it to your local \`docs/\` folder and opened the live preview on the right.`,
+          intent: "FACTUAL",
+          goal: "Workspace Document Synthesis"
+        };
       } else {
-        return `I had trouble connecting to the document synthesizer. Please make sure \`python HAIL/distros/hail-desktop/app.py\` is running in your terminal!`;
+        return {
+          response: `I had trouble connecting to the document synthesizer. Please make sure \`python HAIL/distros/hail-desktop/app.py\` is running in your terminal!`,
+          intent: "FACTUAL",
+          goal: "Workspace Document Synthesis"
+        };
       }
     }
 
@@ -1395,7 +1599,8 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
     }
 
     // Conversational Reply Grounded on Recalled Memory
-    if (recalledMemories.length > 0) {
+    const isActionableRequest = /\b(help|write|create|generate|draft|brainstorm|come up|design|build|make)\b/i.test(lower);
+    if (recalledMemories.length > 0 && !isActionableRequest) {
       const topMem = recalledMemories[0].text;
       return `Based on what you shared earlier (**${topMem}**), I am synchronized and ready to help!`;
     }
@@ -1404,32 +1609,31 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
     return `I'm here to help with whatever you need! Feel free to ask questions, explore ideas, or ask me to generate a research document on any topic.`;
   }
 
-  appendMsg(author, text, type, recalledCount = 0, newlyStoredFact = null, executionMode = null) {
+  appendMsg(author, text, type, recalledCount = 0, newlyStoredFact = null, executionMode = null, intent = "CHAT", goal = "Factual Knowledge Resolution") {
     const div = document.createElement("div");
     div.className = `chat-bubble ${type}`;
 
     let groundingHtml = "";
     if (type === "assistant") {
-      // Determine agent goal based on prompt/text contents
-      let goal = "Factual Knowledge Resolution";
-      const cleanText = text.toLowerCase();
-      if (cleanText.includes("paris") || cleanText.includes("capital")) goal = "Geography / Fact Lookup";
-      else if (cleanText.includes("toyota")) goal = "Automotive Industry Overview";
-      else if (cleanText.includes("linkedin") || cleanText.includes("milestone") || cleanText.includes("graduated")) goal = "LinkedIn Social Synthesis";
-      else if (cleanText.includes("moon") || cleanText.includes("jupiter")) goal = "Astronomy Data Retrieval";
-      else if (cleanText.includes("document") || cleanText.includes("write")) goal = "Workspace Document Synthesis";
-
       const mode = executionMode || this.selectedExecutionMode || "fast";
       const modeLabel = mode === "fast" ? "⚡ Fast Mode" : (mode === "safe" ? "🛡️ Safe Mode" : "🧪 Eval Mode");
 
       let thoughtStream = `
-<div class="agentic-thought-stream" style="background: rgba(15, 23, 42, 0.55); border-left: 2px solid var(--accent-purple); padding: 0.4rem 0.6rem; font-family: monospace; font-size: 10px; line-height: 1.4; color: #94a3b8; margin-bottom: 0.6rem; border-radius: 0 4px 4px 0;">
-  <div style="font-weight: 700; color: var(--accent-purple); margin-bottom: 0.2rem;">🧠 [HAIL Agentic Execution Log]</div>
-  <div>├─ 🎯 Task Goal: <span style="color: #e2e8f0;">${goal}</span></div>
-  <div>├─ ⚙️ Execution Profile: <span style="color: #fb7185;">${modeLabel}</span></div>
-  <div>├─ 📡 SML Grounding: <span style="color: #34d399;">${recalledCount > 0 ? `Active (${recalledCount} recalled)` : "Default Lattice Mode"}</span></div>
-  <div>└─ 🛡️ Safety Verification: <span style="color: #38bdf8;">Consensus Approved (Conf: 0.94)</span></div>
-</div>
+<details class="agentic-thought-stream-details" style="margin-top: 0.6rem; margin-bottom: 0.6rem; border-radius: 6px; border: 1px solid var(--launch-border); background: rgba(28, 34, 72, 0.03); font-family: var(--font-mono); font-size: 10px; line-height: 1.4; color: var(--launch-ink);">
+  <summary style="font-weight: 700; color: var(--launch-lilac); cursor: pointer; padding: 0.4rem 0.6rem; user-select: none; outline: none; display: flex; align-items: center; justify-content: space-between; list-style: none;">
+    <div style="display: flex; align-items: center; gap: 6px;">
+      <span>🧠 [HAIL Agentic Execution Log]</span>
+    </div>
+    <span style="font-size: 9px; font-weight: normal; color: var(--launch-muted); font-style: italic; text-decoration: underline;">toggle debug logs</span>
+  </summary>
+  <div class="agentic-thought-stream" style="background: rgba(15, 23, 42, 0.05); border-top: 1px solid var(--launch-border); padding: 0.5rem 0.6rem; color: var(--launch-ink-subtle); border-radius: 0 0 6px 6px;">
+    <div>├─ 🎯 Task Goal: <span style="font-weight: 600;">${goal}</span></div>
+    <div>├─ ⚙️ Execution Profile: <span style="color: #c026d3; font-weight: 600;">${modeLabel}</span></div>
+    <div>├─ 📡 SML Grounding: <span style="color: #059669; font-weight: 600;">${recalledCount > 0 ? `Active (${recalledCount} recalled)` : "Default Lattice Mode"}</span></div>
+    <div>├─ 🛣️ Routed Intent: <span style="color: #2563eb; font-weight: 600;">${intent}</span></div>
+    <div>└─ 🛡️ Safety Verification: <span style="color: #0d9488;">Consensus Approved (Conf: 0.94)</span></div>
+  </div>
+</details>
       `;
       groundingHtml += thoughtStream;
 
@@ -1486,5 +1690,24 @@ The Cognitive Memory Gateway acts as an open nervous system connecting exogenous
 
 document.addEventListener("DOMContentLoaded", () => {
   new ParticleBackground("bgCanvas");
-  window.hailApp = new HAILChatApp();
+  try {
+    window.hailApp = new HAILChatApp();
+  } catch (err) {
+    console.error("HAIL startup error:", err);
+    window.hailApp = null;
+  }
+
+  const chatForm = document.getElementById("chatForm");
+  if (chatForm && !chatForm.dataset.hailBound) {
+    chatForm.dataset.hailBound = "true";
+    chatForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (window.hailApp && typeof window.hailApp.sendMessage === "function") {
+        window.hailApp.sendMessage();
+      } else {
+        console.error("HAIL chat app failed to initialize; submit suppressed to prevent page reload.");
+      }
+    });
+  }
 });

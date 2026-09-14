@@ -2,6 +2,16 @@ import unittest
 import os
 import shutil
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+HAIL_ROOT = ROOT / "HAIL"
+HAIL_SRC = HAIL_ROOT / "src"
+for p in (ROOT, HAIL_ROOT, HAIL_SRC):
+    sp = str(p)
+    if p.exists() and sp not in sys.path:
+        sys.path.insert(0, sp)
+
 from hydrus_agent.security import WorkspaceGuard
 from hydrus_agent.llm_bridge import HydrusOptAdapter
 from hydrus_agent.servers.file_system import FileSystemServer

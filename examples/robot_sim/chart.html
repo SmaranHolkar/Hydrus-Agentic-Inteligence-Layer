@@ -1,0 +1,1241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HydrusOpt — Robot Safety Dashboard</title>
+  <meta name="description" content="Real-time safety layer visualization for the HydrusOpt Robotic SIL Demo">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary: #0a0e1a;
+      --bg-card: #111827;
+      --bg-card-hover: #1a2236;
+      --border: #1e293b;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-green: #22c55e;
+      --accent-green-glow: rgba(34, 197, 94, 0.25);
+      --accent-amber: #f59e0b;
+      --accent-amber-glow: rgba(245, 158, 11, 0.25);
+      --accent-red: #ef4444;
+      --accent-red-glow: rgba(239, 68, 68, 0.25);
+      --accent-blue: #3b82f6;
+      --accent-blue-glow: rgba(59, 130, 246, 0.2);
+      --accent-purple: #a855f7;
+      --gradient-hero: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+      --radius: 12px;
+      --radius-lg: 16px;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Hero Header ─────────────────────────────────── */
+    .hero {
+      background: var(--gradient-hero);
+      border-bottom: 1px solid var(--border);
+      padding: 48px 32px 40px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle at 30% 50%, rgba(99, 102, 241, 0.08) 0%, transparent 50%),
+                  radial-gradient(circle at 70% 50%, rgba(168, 85, 247, 0.06) 0%, transparent 50%);
+      animation: nebula 20s ease-in-out infinite alternate;
+    }
+
+    @keyframes nebula {
+      0% { transform: translate(0, 0) scale(1); }
+      100% { transform: translate(-5%, 3%) scale(1.05); }
+    }
+
+    .hero-content { position: relative; z-index: 1; }
+
+    .hero h1 {
+      font-size: 2.2rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, #f1f5f9, #a5b4fc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 8px;
+    }
+
+    .hero .subtitle {
+      font-size: 1rem;
+      color: var(--text-secondary);
+      font-weight: 400;
+    }
+
+    .hero .badge {
+      display: inline-block;
+      margin-top: 16px;
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      background: rgba(34, 197, 94, 0.12);
+      color: var(--accent-green);
+      border: 1px solid rgba(34, 197, 94, 0.25);
+    }
+
+    /* ── Dashboard Grid ──────────────────────────────── */
+    .dashboard {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+    }
+
+    .metrics-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .metric-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      transition: transform 0.2s ease, border-color 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .metric-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(148, 163, 184, 0.2);
+    }
+
+    .metric-card .label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .metric-card .value {
+      font-size: 2rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .metric-card .detail {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    .metric-card::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+    }
+
+    .metric-card.green .value { color: var(--accent-green); }
+    .metric-card.green::after { background: var(--accent-green); }
+    .metric-card.amber .value { color: var(--accent-amber); }
+    .metric-card.amber::after { background: var(--accent-amber); }
+    .metric-card.red .value { color: var(--accent-red); }
+    .metric-card.red::after { background: var(--accent-red); }
+    .metric-card.blue .value { color: var(--accent-blue); }
+    .metric-card.blue::after { background: var(--accent-blue); }
+
+    /* ── Section Cards ───────────────────────────────── */
+    .section-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .section-title .icon { font-size: 1.2rem; }
+
+    .chart-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 20px;
+      margin-bottom: 32px;
+    }
+
+    @media (max-width: 768px) {
+      .chart-row { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px;
+      transition: border-color 0.2s ease;
+    }
+
+    .card:hover { border-color: rgba(148, 163, 184, 0.2); }
+
+    /* ── Live 3D & Command Center Row ─────────────── */
+    .hero-view-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 20px;
+      margin-bottom: 32px;
+    }
+    @media (max-width: 900px) {
+      .hero-view-row { grid-template-columns: 1fr; }
+    }
+
+    /* ── Confidence Timeline (Canvas) ────────────────── */
+    #confidenceChart {
+      width: 100%;
+      height: 280px;
+      display: block;
+    }
+
+    /* ── Command Center ──────────────────────────────── */
+    .command-center {
+      display: flex;
+      flex-direction: column;
+      height: 400px;
+      padding: 0;
+      overflow: hidden;
+    }
+    .cmd-header {
+      padding: 16px;
+      background: var(--bg-card-hover);
+      border-bottom: 1px solid var(--border);
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .cmd-logs {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      font-family: monospace;
+      font-size: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .cmd-log-item {
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: rgba(148, 163, 184, 0.05);
+      border-left: 3px solid var(--border);
+    }
+    .cmd-log-item.user { border-left-color: var(--accent-blue); }
+    .cmd-log-item.thought { border-left-color: var(--text-muted); color: var(--text-secondary); }
+    .cmd-log-item.executing { border-left-color: var(--accent-amber); }
+    .cmd-log-item.observation { border-left-color: var(--accent-green); }
+    .cmd-log-item.failed { border-left-color: var(--accent-red); background: rgba(239, 68, 68, 0.05); }
+    .cmd-log-item.blocked { border-left-color: var(--accent-red); background: rgba(239, 68, 68, 0.05); }
+    .cmd-log-item.final_answer { border-left-color: var(--accent-purple); font-weight: bold; }
+    
+    .cmd-input-area {
+      display: flex;
+      padding: 16px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+    .cmd-input-area input {
+      flex: 1;
+      padding: 10px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: rgba(10, 14, 26, 0.5);
+      color: var(--text-primary);
+      outline: none;
+    }
+    .cmd-input-area input:focus { border-color: var(--accent-blue); }
+    .cmd-input-area button {
+      margin-left: 10px;
+      padding: 0 20px;
+      border-radius: 6px;
+      border: none;
+      background: var(--accent-blue);
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .cmd-input-area button:hover { background: #2563eb; }
+
+    /* ── Donut Chart ─────────────────────────────────── */
+    .donut-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #donutChart {
+      width: 200px;
+      height: 200px;
+    }
+
+    .donut-legend {
+      margin-top: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .legend-value {
+      margin-left: auto;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    /* ── Step Table ───────────────────────────────────── */
+    .table-wrapper { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    thead th {
+      text-align: left;
+      padding: 12px 16px;
+      font-weight: 600;
+      font-size: 0.7rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    tbody td {
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    tbody tr {
+      transition: background 0.15s ease;
+    }
+
+    tbody tr:hover {
+      background: var(--bg-card-hover);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+
+    .status-badge.confident {
+      background: rgba(34, 197, 94, 0.12);
+      color: var(--accent-green);
+      border: 1px solid rgba(34, 197, 94, 0.2);
+    }
+
+    .status-badge.uncertain {
+      background: rgba(245, 158, 11, 0.12);
+      color: var(--accent-amber);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+    }
+
+    .status-badge.estop {
+      background: rgba(239, 68, 68, 0.12);
+      color: var(--accent-red);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+    }
+
+    .conf-bar-cell {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .conf-bar-track {
+      width: 80px;
+      height: 6px;
+      background: rgba(148, 163, 184, 0.1);
+      border-radius: 3px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .conf-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.6s ease;
+    }
+
+    .check { color: var(--accent-green); }
+    .cross { color: var(--accent-red); }
+
+    .reason-text {
+      max-width: 280px;
+      white-space: normal;
+      line-height: 1.4;
+      font-size: 0.8rem;
+    }
+
+    /* ── Footer ───────────────────────────────────────── */
+    .footer {
+      text-align: center;
+      padding: 32px;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .footer a {
+      color: var(--accent-blue);
+      text-decoration: none;
+    }
+
+    /* ── Demo Buttons ──────────────────────────────────── */
+    .demo-btn {
+      padding: 10px 24px;
+      border-radius: 8px;
+      border: none;
+      font-family: 'Inter', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+    }
+    .demo-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
+    .demo-btn:active { transform: translateY(0); }
+    .demo-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+    .demo-btn-primary {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: white;
+    }
+    .demo-btn-danger {
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      color: white;
+    }
+    .demo-status-text {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      font-style: italic;
+      min-width: 200px;
+    }
+
+    /* ── Animations ───────────────────────────────────── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .animate-in {
+      animation: fadeUp 0.5s ease-out both;
+    }
+
+    .animate-in:nth-child(1) { animation-delay: 0.05s; }
+    .animate-in:nth-child(2) { animation-delay: 0.1s; }
+    .animate-in:nth-child(3) { animation-delay: 0.15s; }
+    .animate-in:nth-child(4) { animation-delay: 0.2s; }
+    .animate-in:nth-child(5) { animation-delay: 0.25s; }
+
+    /* ── Live 3D Viewer ─────────────────────────────── */
+    .live-3d-card {
+      position: relative;
+      padding: 0;
+      overflow: hidden;
+      height: 400px;
+    }
+    #threeCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      border-radius: var(--radius-lg);
+    }
+    .live-hud {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      background: rgba(10, 14, 26, 0.85);
+      backdrop-filter: blur(8px);
+      padding: 16px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      pointer-events: none;
+      z-index: 10;
+    }
+    .live-hud-title {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      color: var(--accent-blue);
+      margin-bottom: 8px;
+    }
+    .live-hud-metric {
+      font-size: 0.9rem;
+      font-family: monospace;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+    .hud-status {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-top: 8px;
+    }
+    .hud-status.IDLE { background: rgba(148, 163, 184, 0.2); color: var(--text-secondary); }
+    .hud-status.MOVING { background: rgba(34, 197, 94, 0.2); color: var(--accent-green); }
+    .hud-status.ROTATING { background: rgba(59, 130, 246, 0.2); color: var(--accent-blue); }
+    .hud-status.E-STOPPED, .hud-status.CRITICAL_FAILURE { background: rgba(239, 68, 68, 0.2); color: var(--accent-red); }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+  <!-- ── Hero ──────────────────────────────────────────── -->
+  <header class="hero">
+    <div class="hero-content">
+      <h1 id="heroTitle">🤖 HydrusOpt — Robot Safety Dashboard</h1>
+      <p class="subtitle" id="heroSubtitle">Software-in-the-Loop Safety Layer Visualization</p>
+      <span class="badge" id="heroBadge">LIVE</span>
+      <div style="margin-top: 20px; display: flex; gap: 12px; justify-content: center; align-items: center; flex-wrap: wrap;">
+        <button id="runDemoBtn" class="demo-btn demo-btn-primary">▶ Run Demo Mission</button>
+        <button id="stopDemoBtn" class="demo-btn demo-btn-danger" style="display:none;">⏹ Stop Demo</button>
+        <span id="demoStatus" class="demo-status-text"></span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Dashboard ─────────────────────────────────────── -->
+  <main class="dashboard">
+
+    <!-- Live 3D Viewer & Command Center -->
+    <div class="hero-view-row">
+      <div class="card live-3d-card animate-in">
+        <div class="live-hud">
+          <div class="live-hud-title">Live Telemetry</div>
+          <div class="live-hud-metric">Pos: <span id="hudPos">0.00, 0.00, 0.00</span></div>
+          <div class="live-hud-metric">Hdg: <span id="hudHdg">0.0°</span></div>
+          <div class="live-hud-metric">Bat: <span id="hudBat">100%</span></div>
+          <div id="hudStatus" class="hud-status IDLE">IDLE</div>
+        </div>
+        <div id="threeCanvas"></div>
+      </div>
+      
+      <div class="card command-center animate-in">
+        <div class="cmd-header"><span class="icon">💬</span> Command Center</div>
+        <div class="cmd-logs" id="cmdLogs">
+          <div class="cmd-log-item" style="border-left-color: transparent;">Waiting for Python Agent on port 3001...</div>
+        </div>
+        <div class="cmd-input-area">
+          <input type="text" id="cmdInput" placeholder="Drive straight to waypoint A..." autocomplete="off">
+          <button id="cmdBtn">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metric Cards -->
+    <div class="metrics-row" id="metricsRow"></div>
+
+    <!-- Charts Row -->
+    <div class="chart-row">
+      <!-- Confidence Timeline -->
+      <div class="card animate-in">
+        <div class="section-title"><span class="icon">📈</span> Confidence Timeline</div>
+        <canvas id="confidenceChart"></canvas>
+      </div>
+      <!-- Outcome Donut -->
+      <div class="card donut-container animate-in">
+        <div class="section-title"><span class="icon">🎯</span> Outcome Breakdown</div>
+        <canvas id="donutChart"></canvas>
+        <div class="donut-legend" id="donutLegend"></div>
+      </div>
+    </div>
+
+    <!-- Step Detail Table -->
+    <div class="card animate-in">
+      <div class="section-title"><span class="icon">📋</span> Step-by-Step Detail</div>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Step</th>
+              <th>Action</th>
+              <th>Confidence</th>
+              <th>Status</th>
+              <th>Sensors</th>
+              <th>Actuator</th>
+              <th>Recovery</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="stepTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+
+  <footer class="footer">
+    HydrusOpt Robotic Safety Layer &middot; Software-in-the-Loop Proof of Concept
+  </footer>
+
+  <script>
+    // ── Load report data ────────────────────────────────────────────────
+    const REPORT_PATH = "robot_sim_report.json";
+
+    async function loadReport() {
+      try {
+        const resp = await fetch(REPORT_PATH + "?t=" + new Date().getTime());
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return await resp.json();
+      } catch (e) {
+        console.error("Failed to load report:", e);
+        // Inline fallback data
+        return {
+          demo: "HydrusOpt Robotic Safety Layer",
+          timestamp: new Date().toISOString(),
+          metrics: { total: 7, confident: 3, recovered: 1, actuator_faults: 1, estops: 3, avg_confidence: 0.6264 },
+          annotations: [
+            { step: 1, action: "MOVE", confidence: 0.9169, status: "CONFIDENT", sensor_valid: true, actuator_valid: true, recovery_used: false, estop_triggered: false, reason: "Navigate to waypoint A" },
+            { step: 2, action: "MOVE", confidence: 0.9743, status: "CONFIDENT", sensor_valid: true, actuator_valid: true, recovery_used: false, estop_triggered: false, reason: "Navigate to waypoint B" },
+            { step: 3, action: "MOVE", confidence: 0.0, status: "ESTOP", sensor_valid: false, actuator_valid: true, recovery_used: false, estop_triggered: true, reason: "Sensor Hallucination: x=99999 exceeds physical limit (500.0m)" },
+            { step: 4, action: "MOVE", confidence: 0.9157, status: "CONFIDENT", sensor_valid: true, actuator_valid: true, recovery_used: false, estop_triggered: false, reason: "Cautious resume after recovery" },
+            { step: 5, action: "MOVE", confidence: 0.8057, status: "ESTOP", sensor_valid: true, actuator_valid: false, recovery_used: false, estop_triggered: true, reason: "Actuator stall detected — commanded 8.94m, actual 0.0000m (ratio 0.00% < tolerance 10%)" },
+            { step: 6, action: "MOVE", confidence: 0.3165, status: "ESTOP", sensor_valid: true, actuator_valid: true, recovery_used: false, estop_triggered: true, reason: "Confidence 31.65% < ESTOP threshold 40%" },
+            { step: 7, action: "ROTATE", confidence: 0.4555, status: "UNCERTAIN", sensor_valid: true, actuator_valid: true, recovery_used: true, estop_triggered: false, reason: "Recovery micro-step (confidence=0.46, scale=0.17)" },
+          ]
+        };
+      }
+    }
+
+    // ── Render Metric Cards ─────────────────────────────────────────────
+    function renderMetrics(report) {
+      const m = report.metrics;
+      const cards = [
+        { label: "Total Actions", value: m.total, detail: "commands processed", cls: "blue" },
+        { label: "Confident", value: m.confident, detail: `${((m.confident / m.total) * 100).toFixed(0)}% safe pass-through`, cls: "green" },
+        { label: "E-Stops Fired", value: m.estops, detail: "hazards prevented", cls: "red" },
+        { label: "Avg Confidence", value: `${(m.avg_confidence * 100).toFixed(1)}%`, detail: "across all steps", cls: "amber" },
+      ];
+
+      const row = document.getElementById("metricsRow");
+      cards.forEach((c, i) => {
+        const el = document.createElement("div");
+        el.className = `metric-card ${c.cls} animate-in`;
+        el.innerHTML = `
+          <div class="label">${c.label}</div>
+          <div class="value">${c.value}</div>
+          <div class="detail">${c.detail}</div>
+        `;
+        row.appendChild(el);
+      });
+    }
+
+    // ── Draw Confidence Timeline ────────────────────────────────────────
+    function drawConfidenceChart(annotations) {
+      const canvas = document.getElementById("confidenceChart");
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+
+      const W = rect.width;
+      const H = rect.height;
+      const pad = { top: 24, right: 24, bottom: 40, left: 52 };
+      const plotW = W - pad.left - pad.right;
+      const plotH = H - pad.top - pad.bottom;
+
+      const n = annotations.length;
+
+      // ── Safety zone fills ──
+      const zones = [
+        { yMin: 0.0, yMax: 0.40, color: "rgba(239, 68, 68, 0.06)", label: "E-STOP" },
+        { yMin: 0.40, yMax: 0.72, color: "rgba(245, 158, 11, 0.06)", label: "UNCERTAIN" },
+        { yMin: 0.72, yMax: 1.0, color: "rgba(34, 197, 94, 0.06)", label: "CONFIDENT" },
+      ];
+
+      zones.forEach(z => {
+        const y1 = pad.top + plotH * (1 - z.yMax);
+        const y2 = pad.top + plotH * (1 - z.yMin);
+        ctx.fillStyle = z.color;
+        ctx.fillRect(pad.left, y1, plotW, y2 - y1);
+      });
+
+      // ── Threshold lines ──
+      [0.40, 0.72].forEach(thresh => {
+        const y = pad.top + plotH * (1 - thresh);
+        ctx.strokeStyle = thresh === 0.40 ? "rgba(239, 68, 68, 0.3)" : "rgba(245, 158, 11, 0.3)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + plotW, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Label
+        ctx.fillStyle = thresh === 0.40 ? "rgba(239, 68, 68, 0.6)" : "rgba(245, 158, 11, 0.6)";
+        ctx.font = "600 10px Inter, sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(thresh === 0.40 ? "ESTOP 40%" : "SAFE 72%", pad.left + plotW - 4, y - 4);
+      });
+
+      // ── Y-axis ticks ──
+      ctx.fillStyle = "rgba(148, 163, 184, 0.5)";
+      ctx.font = "500 11px Inter, sans-serif";
+      ctx.textAlign = "right";
+      for (let v = 0; v <= 1.0; v += 0.2) {
+        const y = pad.top + plotH * (1 - v);
+        ctx.fillText(`${(v * 100).toFixed(0)}%`, pad.left - 10, y + 4);
+        // grid line
+        ctx.strokeStyle = "rgba(148, 163, 184, 0.06)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + plotW, y);
+        ctx.stroke();
+      }
+
+      // ── Data points & line ──
+      const points = annotations.map((a, i) => ({
+        x: pad.left + (i / (n - 1)) * plotW,
+        y: pad.top + plotH * (1 - a.confidence),
+        conf: a.confidence,
+        status: a.status,
+        step: a.step,
+      }));
+
+      // Gradient fill under line
+      const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
+      grad.addColorStop(0, "rgba(99, 102, 241, 0.15)");
+      grad.addColorStop(1, "rgba(99, 102, 241, 0.0)");
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, pad.top + plotH);
+      points.forEach(p => ctx.lineTo(p.x, p.y));
+      ctx.lineTo(points[points.length - 1].x, pad.top + plotH);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Line
+      ctx.strokeStyle = "#6366f1";
+      ctx.lineWidth = 2.5;
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+      ctx.stroke();
+
+      // Dots
+      points.forEach(p => {
+        let color = "#22c55e";
+        let glow = "rgba(34, 197, 94, 0.4)";
+        if (p.status === "ESTOP") { color = "#ef4444"; glow = "rgba(239, 68, 68, 0.4)"; }
+        else if (p.status === "UNCERTAIN") { color = "#f59e0b"; glow = "rgba(245, 158, 11, 0.4)"; }
+
+        // Glow
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
+        ctx.fillStyle = glow;
+        ctx.fill();
+
+        // Dot
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.strokeStyle = "#0a0e1a";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+
+      // ── X-axis labels ──
+      ctx.fillStyle = "rgba(148, 163, 184, 0.6)";
+      ctx.font = "500 11px Inter, sans-serif";
+      ctx.textAlign = "center";
+      points.forEach(p => {
+        ctx.fillText(`Step ${p.step}`, p.x, pad.top + plotH + 24);
+      });
+    }
+
+    // ── Draw Donut Chart ────────────────────────────────────────────────
+    function drawDonut(metrics) {
+      const canvas = document.getElementById("donutChart");
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+
+      canvas.width = 200 * dpr;
+      canvas.height = 200 * dpr;
+      ctx.scale(dpr, dpr);
+
+      const cx = 100, cy = 100, outerR = 85, innerR = 55;
+
+      const slices = [
+        { label: "Confident", value: metrics.confident, color: "#22c55e" },
+        { label: "Recovered", value: metrics.recovered, color: "#f59e0b" },
+        { label: "E-Stopped", value: metrics.estops, color: "#ef4444" },
+      ];
+
+      const total = slices.reduce((s, sl) => s + sl.value, 0);
+      let startAngle = -Math.PI / 2;
+
+      slices.forEach(sl => {
+        const sweep = (sl.value / total) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, outerR, startAngle, startAngle + sweep);
+        ctx.arc(cx, cy, innerR, startAngle + sweep, startAngle, true);
+        ctx.closePath();
+        ctx.fillStyle = sl.color;
+        ctx.fill();
+        startAngle += sweep;
+      });
+
+      // Center text
+      ctx.fillStyle = "#f1f5f9";
+      ctx.font = "800 28px Inter, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(total, cx, cy - 8);
+      ctx.fillStyle = "#64748b";
+      ctx.font = "500 11px Inter, sans-serif";
+      ctx.fillText("actions", cx, cy + 14);
+
+      // Legend
+      const legend = document.getElementById("donutLegend");
+      slices.forEach(sl => {
+        const item = document.createElement("div");
+        item.className = "legend-item";
+        item.innerHTML = `
+          <span class="legend-dot" style="background:${sl.color}"></span>
+          <span>${sl.label}</span>
+          <span class="legend-value">${sl.value}</span>
+        `;
+        legend.appendChild(item);
+      });
+    }
+
+    // ── Render Step Table ────────────────────────────────────────────────
+    function renderTable(annotations) {
+      const tbody = document.getElementById("stepTableBody");
+
+      annotations.forEach(a => {
+        const confPct = (a.confidence * 100).toFixed(1);
+        let barColor = "#22c55e";
+        let statusCls = "confident";
+        let statusIcon = "✓";
+
+        if (a.status === "ESTOP") {
+          barColor = "#ef4444";
+          statusCls = "estop";
+          statusIcon = "🛑";
+        } else if (a.status === "UNCERTAIN") {
+          barColor = "#f59e0b";
+          statusCls = "uncertain";
+          statusIcon = "⚠";
+        }
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td style="font-weight:700; color:var(--text-primary)">${a.step}</td>
+          <td style="font-weight:600">${a.action}</td>
+          <td>
+            <div class="conf-bar-cell">
+              <div class="conf-bar-track">
+                <div class="conf-bar-fill" style="width:${confPct}%; background:${barColor}"></div>
+              </div>
+              <span style="font-weight:600; color:${barColor}">${confPct}%</span>
+            </div>
+          </td>
+          <td><span class="status-badge ${statusCls}">${statusIcon} ${a.status}</span></td>
+          <td><span class="${a.sensor_valid ? 'check' : 'cross'}">${a.sensor_valid ? '✓' : '✗'}</span></td>
+          <td><span class="${a.actuator_valid ? 'check' : 'cross'}">${a.actuator_valid ? '✓' : '✗'}</span></td>
+          <td>${a.recovery_used ? '<span style="color:#f59e0b; font-weight:600">Yes</span>' : '<span style="color:var(--text-muted)">—</span>'}</td>
+          <td class="reason-text">${a.reason}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // ── Init ────────────────────────────────────────────────────────────
+    (async () => {
+      const report = await loadReport();
+
+      // Update hero with timestamp
+      const ts = new Date(report.timestamp);
+      document.getElementById("heroSubtitle").textContent =
+        `Software-in-the-Loop Safety Layer · ${ts.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`;
+
+      renderMetrics(report);
+      drawConfidenceChart(report.annotations);
+      drawDonut(report.metrics);
+      renderTable(report.annotations);
+    })();
+
+    // ── Live 3D Visualization ────────────────────────────────────────────
+    function init3DViewer() {
+      const container = document.getElementById("threeCanvas");
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0a0e1a);
+
+      const camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 1000);
+      camera.position.set(20, 15, 20);
+      camera.lookAt(0, 0, 0);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(container.clientWidth, container.clientHeight);
+      container.appendChild(renderer.domElement);
+
+      // Environment
+      const gridHelper = new THREE.GridHelper(100, 100, 0x1e293b, 0x1e293b);
+      scene.add(gridHelper);
+
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+      scene.add(ambientLight);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.position.set(10, 20, 10);
+      scene.add(dirLight);
+
+      // Robot Object
+      const robotGroup = new THREE.Group();
+      scene.add(robotGroup);
+
+      // Chassis (Body)
+      const chassisGeo = new THREE.BoxGeometry(2.5, 0.8, 4.5);
+      const chassisMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.3, metalness: 0.8 });
+      const chassis = new THREE.Mesh(chassisGeo, chassisMat);
+      chassis.position.y = 0.6;
+      robotGroup.add(chassis);
+
+      // Cabin (Windshield / Top)
+      const cabinGeo = new THREE.BoxGeometry(2.0, 0.8, 2.0);
+      const cabinMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.1, metalness: 0.9 });
+      const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+      cabin.position.set(0, 1.4, 0.5); // Placed slightly towards the back, so -Z is clearly the front
+      robotGroup.add(cabin);
+
+      // Direction Indicator (glow / headlights)
+      const indicatorGeo = new THREE.BoxGeometry(1.5, 0.2, 0.2);
+      const indicatorMat = new THREE.MeshBasicMaterial({ color: 0x64748b });
+      const indicator = new THREE.Mesh(indicatorGeo, indicatorMat);
+      indicator.position.set(0, 1.0, -2.25); // Front bumper
+      robotGroup.add(indicator);
+
+      // Wheels
+      const wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.4, 16);
+      const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111827 });
+      wheelGeo.rotateZ(Math.PI / 2);
+      
+      const wheelPositions = [
+        [1.5, 0.5, 1.5], [-1.5, 0.5, 1.5],
+        [1.5, 0.5, -1.5], [-1.5, 0.5, -1.5]
+      ];
+      wheelPositions.forEach(pos => {
+        const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+        wheel.position.set(...pos);
+        robotGroup.add(wheel);
+      });
+
+      // Camera follow logic
+      const targetCameraPos = new THREE.Vector3();
+
+      function animate() {
+        requestAnimationFrame(animate);
+        
+        // Smooth camera follow
+        targetCameraPos.set(robotGroup.position.x + 15, robotGroup.position.y + 12, robotGroup.position.z + 15);
+        camera.position.lerp(targetCameraPos, 0.05);
+        camera.lookAt(robotGroup.position);
+
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      // Handle Resize
+      window.addEventListener('resize', () => {
+        camera.aspect = container.clientWidth / container.clientHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(container.clientWidth, container.clientHeight);
+      });
+
+      // target object position for lerping
+      const targetPos = new THREE.Vector3();
+      let targetRotationY = 0;
+
+      // Polling Loop
+      setInterval(async () => {
+        try {
+          const res = await fetch("http://localhost:3000/status");
+          if (!res.ok) return;
+          const status = await res.json();
+
+          // Update HUD
+          document.getElementById("hudPos").textContent = `${status.x.toFixed(2)}, ${status.y.toFixed(2)}, ${status.z.toFixed(2)}`;
+          document.getElementById("hudHdg").textContent = `${status.heading.toFixed(1)}°`;
+          document.getElementById("hudBat").textContent = `${status.battery.toFixed(1)}%`;
+          
+          const hudStatus = document.getElementById("hudStatus");
+          hudStatus.textContent = status.status;
+          hudStatus.className = `hud-status ${status.status.replace(" ", "_")}`;
+
+          // Update 3D Robot
+          // Three.js Y is up. Sim uses Z as up. 
+          // So Three.js (X, Y, Z) = Sim (X, Z, -Y)
+          targetPos.set(status.x, status.z, -status.y);
+          targetRotationY = -(status.heading * Math.PI / 180);
+
+          robotGroup.position.lerp(targetPos, 0.2);
+          
+          // Basic rotation lerp (could be improved for shortest path)
+          robotGroup.rotation.y += (targetRotationY - robotGroup.rotation.y) * 0.2;
+
+          // Update colors based on status
+          if (status.status === "E-STOPPED" || status.status.includes("CRITICAL")) {
+            indicatorMat.color.setHex(0xef4444); // Red
+          } else if (status.status === "STALLED" || status.status === "UNCERTAIN") {
+            indicatorMat.color.setHex(0xf59e0b); // Amber
+          } else if (status.status === "MOVING" || status.status === "ROTATING") {
+            indicatorMat.color.setHex(0x22c55e); // Green
+          } else {
+            indicatorMat.color.setHex(0x64748b); // Default Slate
+          }
+
+        } catch (e) {
+          // If server is off, just ignore
+        }
+      }, 100);
+    }
+
+    // Initialize 3D Viewer after a short delay
+    setTimeout(init3DViewer, 500);
+
+    // Redraw on resize
+    let resizeTimer;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(async () => {
+        const report = await loadReport();
+        drawConfidenceChart(report.annotations);
+      }, 200);
+    });
+    // ── Command Center Logic ─────────────────────────────────────────────
+    let agentLogsLength = 0;
+    
+    async function pollAgentLogs() {
+      try {
+        const res = await fetch("http://localhost:3001/logs");
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        if (data.logs && data.logs.length > agentLogsLength) {
+          const logsContainer = document.getElementById("cmdLogs");
+          
+          if (agentLogsLength === 0) {
+            logsContainer.innerHTML = ''; // clear waiting message
+          }
+          
+          for (let i = agentLogsLength; i < data.logs.length; i++) {
+            const log = data.logs[i];
+            const div = document.createElement("div");
+            div.className = `cmd-log-item ${log.role === 'user' ? 'user' : log.type}`;
+            div.textContent = log.role === 'user' ? `User > ${log.message}` : log.message;
+            logsContainer.appendChild(div);
+          }
+          agentLogsLength = data.logs.length;
+          logsContainer.scrollTop = logsContainer.scrollHeight;
+        }
+      } catch (e) {
+        // Agent might not be running yet
+      }
+    }
+    
+    setInterval(pollAgentLogs, 500);
+
+    const cmdInput = document.getElementById("cmdInput");
+    const cmdBtn = document.getElementById("cmdBtn");
+
+    async function sendPrompt() {
+      const prompt = cmdInput.value.trim();
+      if (!prompt) return;
+      cmdInput.value = "";
+      cmdInput.disabled = true;
+      cmdBtn.disabled = true;
+      try {
+        await fetch("http://localhost:3001/prompt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt })
+        });
+      } catch (e) {
+        console.error("Failed to send prompt to agent:", e);
+      }
+      cmdInput.disabled = false;
+      cmdBtn.disabled = false;
+      cmdInput.focus();
+    }
+
+    cmdBtn.addEventListener("click", sendPrompt);
+    cmdInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendPrompt();
+    });
+
+    // ── Auto Demo Mission ────────────────────────────────────────────────
+    const DEMO_MISSION = [
+      { delay: 500,  action: "prompt",  text: "Perform a system check and confirm all sensors are online." },
+      { delay: 8000, action: "prompt",  text: "Navigate forward 5 meters to Waypoint Alpha." },
+      { delay: 12000, action: "prompt",  text: "Rotate 90 degrees clockwise to face the loading bay." },
+      { delay: 10000, action: "fault",   fault: "motor_stall", active: true, label: "⚠️  FAULT INJECTED: Motor Stall" },
+      { delay: 2000, action: "prompt",  text: "Advance 8 meters to the loading bay door." },
+      { delay: 14000, action: "fault",   fault: "motor_stall", active: false, label: "✅  Fault cleared: Motor Stall" },
+      { delay: 2000, action: "prompt",  text: "Perform recovery: reset system and resume navigation to Waypoint Beta." },
+      { delay: 12000, action: "fault",   fault: "sensor_glitch", active: true, label: "⚠️  FAULT INJECTED: Sensor Glitch" },
+      { delay: 2000, action: "prompt",  text: "Navigate forward 3 meters to final docking position." },
+      { delay: 10000, action: "fault",   fault: "sensor_glitch", active: false, label: "✅  Fault cleared: Sensor Glitch" },
+      { delay: 2000, action: "prompt",  text: "Mission complete. Return to home base." },
+    ];
+
+    let demoRunning = false;
+    let demoTimeouts = [];
+
+    async function injectFault(fault, active) {
+      try {
+        await fetch("http://localhost:3000/admin/fault", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fault, active })
+        });
+      } catch(e) { console.warn("Fault injection failed:", e); }
+    }
+
+    async function appendDemoLog(text, type = "system") {
+      const logsContainer = document.getElementById("cmdLogs");
+      const div = document.createElement("div");
+      div.className = "cmd-log-item";
+      div.style.borderLeftColor = type === "fault" ? "var(--accent-red)" : "var(--accent-purple)";
+      div.style.color = type === "fault" ? "var(--accent-red)" : "var(--text-secondary)";
+      div.style.fontStyle = "italic";
+      div.textContent = text;
+      logsContainer.appendChild(div);
+      logsContainer.scrollTop = logsContainer.scrollHeight;
+    }
+
+    function runDemo() {
+      if (demoRunning) return;
+      demoRunning = true;
+      demoTimeouts = [];
+
+      document.getElementById("runDemoBtn").style.display = "none";
+      document.getElementById("stopDemoBtn").style.display = "inline-block";
+
+      // Clear logs and reset
+      fetch("http://localhost:3001/clear", { method: "POST" }).catch(()=>{});
+      fetch("http://localhost:3000/admin/reset-all", { method: "POST" }).catch(()=>{});
+      agentLogsLength = 0;
+      document.getElementById("cmdLogs").innerHTML = "";
+      appendDemoLog("🚀 Auto Mission Started — HydrusOpt Safety Demo", "system");
+
+      let cumulativeDelay = 0;
+      DEMO_MISSION.forEach((step, i) => {
+        cumulativeDelay += step.delay;
+        const t = setTimeout(async () => {
+          if (!demoRunning) return;
+          if (step.action === "prompt") {
+            try {
+              await fetch("http://localhost:3001/prompt", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ prompt: step.text })
+              });
+            } catch(e) { console.warn("Prompt send failed:", e); }
+          } else if (step.action === "fault") {
+            await injectFault(step.fault, step.active);
+            appendDemoLog(step.label, "fault");
+          }
+          // Update status label
+          const remaining = DEMO_MISSION.length - 1 - i;
+          document.getElementById("demoStatus").textContent = 
+            remaining > 0 ? `Step ${i + 1}/${DEMO_MISSION.length} running...` : "✅ Demo complete!";
+
+          if (i === DEMO_MISSION.length - 1) stopDemo();
+        }, cumulativeDelay);
+        demoTimeouts.push(t);
+      });
+    }
+
+    function stopDemo() {
+      demoRunning = false;
+      demoTimeouts.forEach(clearTimeout);
+      demoTimeouts = [];
+      document.getElementById("runDemoBtn").style.display = "inline-block";
+      document.getElementById("stopDemoBtn").style.display = "none";
+      // Clear any injected faults
+      ["motor_stall", "sensor_glitch", "low_battery_sim", "comm_noise"].forEach(f =>
+        fetch("http://localhost:3000/admin/fault", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fault: f, active: false })
+        }).catch(()=>{})
+      );
+    }
+
+    document.getElementById("runDemoBtn").addEventListener("click", runDemo);
+    document.getElementById("stopDemoBtn").addEventListener("click", stopDemo);
+
+  </script>
+</body>
+</html>

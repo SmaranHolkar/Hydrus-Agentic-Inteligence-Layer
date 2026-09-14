@@ -33,6 +33,26 @@ class TestMoEEngine(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("telemetry", result)
         self.assertEqual(result["telemetry"]["active_model"], "qwen3-35b-a3b")
+        self.assertIn("dispatch", result)
+        self.assertIn("execution", result["telemetry"])
+        self.assertIn("sparse_dispatch", result["telemetry"]["execution"])
+
+    def test_status_reports_synthetic_execution_mode(self):
+        manifest = {
+            "model_id": "qwen3-35b-a3b",
+            "version": "1.0.2",
+            "merkle_root": "",
+            "experts": [{"id": i, "sha256": f"hash_{i}"} for i in range(4)]
+        }
+        self.assertTrue(self.engine.load_manifest(manifest))
+        status = self.engine.get_status()
+        self.assertIn("execution", status)
+        self.assertEqual(status["execution"]["weights_mode"], "synthetic_fixture")
+        self.assertTrue(status["execution"]["is_synthetic_demo"])
+        self.assertFalse(status["execution"]["streaming_generation_verified"])
+        self.assertIn("claims", status)
+        self.assertFalse(status["claims"]["can_claim_real_35b_streaming"])
+        self.assertEqual(status["claims"]["reason"], "no_verified_full_local_blob_manifest")
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,16 @@ import os
 import json
 import subprocess
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+HAIL_ROOT = ROOT / "HAIL"
+HAIL_SRC = HAIL_ROOT / "src"
+for p in (ROOT, HAIL_ROOT, HAIL_SRC):
+    sp = str(p)
+    if p.exists() and sp not in sys.path:
+        sys.path.insert(0, sp)
+
 from hydrus_agent.recipe_engine import RecipeEngine, Recipe, RecipeStep
 from hydrus_agent.orchestrator import AsyncSubagentOrchestrator, SubagentTask
 from hydrus_agent.servers.git_ops import GitOpsServer

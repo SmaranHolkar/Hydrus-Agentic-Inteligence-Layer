@@ -1,0 +1,103 @@
+{
+  "demo": "HydrusOpt Robotic Safety Layer",
+  "timestamp": "2026-06-05T10:13:34Z",
+  "metrics": {
+    "total": 8,
+    "confident": 5,
+    "recovered": 1,
+    "actuator_faults": 1,
+    "estops": 2,
+    "false_alarm_estops": 0,
+    "avg_confidence": 0.6663
+  },
+  "annotations": [
+    {
+      "step": 1,
+      "action": "MOVE",
+      "confidence": 0.8698,
+      "status": "CONFIDENT",
+      "sensor_valid": true,
+      "actuator_valid": true,
+      "recovery_used": false,
+      "estop_triggered": false,
+      "reason": "Drive straight to waypoint A"
+    },
+    {
+      "step": 2,
+      "action": "ROTATE",
+      "confidence": 0.9513,
+      "status": "CONFIDENT",
+      "sensor_valid": true,
+      "actuator_valid": true,
+      "recovery_used": false,
+      "estop_triggered": false,
+      "reason": "Turn toward waypoint B"
+    },
+    {
+      "step": 3,
+      "action": "MOVE",
+      "confidence": 0.9382,
+      "status": "CONFIDENT",
+      "sensor_valid": true,
+      "actuator_valid": true,
+      "recovery_used": false,
+      "estop_triggered": false,
+      "reason": "Drive to waypoint B"
+    },
+    {
+      "step": 4,
+      "action": "MOVE",
+      "confidence": 0.0,
+      "status": "ESTOP",
+      "sensor_valid": false,
+      "actuator_valid": true,
+      "recovery_used": false,
+      "estop_triggered": true,
+      "reason": "Sensor Hallucination: x=99999 exceeds physical limit (500.0m)"
+    },
+    {
+      "step": 5,
+      "action": "MOVE",
+      "confidence": 0.9647,
+      "status": "CONFIDENT",
+      "sensor_valid": true,
+      "actuator_valid": true,
+      "recovery_used": false,
+      "estop_triggered": false,
+      "reason": "Cautious resume after recovery"
+    },
+    {
+      "step": 6,
+      "action": "MOVE",
+      "confidence": 0.7595,
+      "status": "ESTOP",
+      "sensor_valid": true,
+      "actuator_valid": false,
+      "recovery_used": false,
+      "estop_triggered": true,
+      "reason": "Actuator stall detected \u2014 commanded 8.94m, actual 0.0000m (ratio 0.00% < tolerance 10%)"
+    },
+    {
+      "step": 7,
+      "action": "MOVE",
+      "confidence": 0.3431,
+      "status": "UNCERTAIN",
+      "sensor_valid": true,
+      "actuator_valid": true,
+      "recovery_used": true,
+      "estop_triggered": false,
+      "reason": "Recovery micro-step (confidence=0.34, scale=0.78)"
+    },
+    {
+      "step": 8,
+      "action": "ROTATE",
+      "confidence": 0.5036,
+      "status": "CONFIDENT",
+      "sensor_valid": true,
+      "actuator_valid": true,
+      "recovery_used": false,
+      "estop_triggered": false,
+      "reason": "Turn toward docking station"
+    }
+  ]
+}

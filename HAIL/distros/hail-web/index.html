@@ -152,9 +152,9 @@
 
         <!-- Chat Input Field Bar -->
         <div class="chat-input-bar">
-          <form id="chatForm" class="input-box-wrapper">
-            <input type="text" id="chatInput" placeholder="Ask HAIL anything or type 'Create doc about X'..." autocomplete="off">
-            <button type="submit" class="send-btn">Send</button>
+          <form id="chatForm" class="input-box-wrapper" novalidate onsubmit="event.preventDefault(); event.stopPropagation(); if (window.hailApp && typeof window.hailApp.sendMessage === 'function') { window.hailApp.sendMessage(); } return false;">
+            <input type="text" id="chatInput" placeholder="Ask HAIL anything or type 'Create doc about X'..." autocomplete="off" onkeydown="if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); if (window.hailApp && typeof window.hailApp.sendMessage === 'function') { window.hailApp.sendMessage(); } return false; }">
+            <button id="sendBtn" type="button" class="send-btn" onclick="if (window.hailApp && typeof window.hailApp.sendMessage === 'function') { window.hailApp.sendMessage(); } return false;">Send</button>
           </form>
         </div>
       </section>

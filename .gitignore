@@ -24,6 +24,8 @@ Thumbs.db
 # Runtime data & temporary persistence dumps
 *.hcl
 *.json.bak
+facts_*.json
+scratch/
 data/*.hcl
 data/*.json
 

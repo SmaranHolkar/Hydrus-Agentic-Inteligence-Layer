@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hydrus-moe"
+version = "0.1.0"
+description = "HydrusMoE: 4-Tier Streamable Mixture-of-Experts Engine with Hardware-Bound Zero-Trust Security & Predictive Prefetching"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{ name = "HydrusOPT Team", email = "dev@hydrusopt.com" }]
+dependencies = [
+    "torch>=2.0.0",
+    "cryptography>=42.0.0",
+    "zstandard>=0.22.0",
+]
+
+[project.optional-dependencies]
+quant = ["bitsandbytes>=0.43.0", "accelerate>=0.30.0"]
+transformers = ["transformers>=4.40.0"]
+all = [
+    "bitsandbytes>=0.43.0",
+    "accelerate>=0.30.0",
+    "transformers>=4.40.0",
+]
+dev = ["pytest>=8", "mypy>=1.10"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hydrusmoe"]

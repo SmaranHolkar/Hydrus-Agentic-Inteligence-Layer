@@ -37,5 +37,22 @@ class TestMoEPrefetcher(unittest.TestCase):
         self.assertIn(1, fetched)
         self.assertIn(2, fetched)
 
+    def test_prefetch_metrics_accounting(self):
+        predicted = self.prefetcher.predict("python class debugging")
+        self.assertTrue(len(predicted) >= 1)
+
+        # Force a partial overlap so precision/recall are non-trivial and testable.
+        overlap_pick = sorted(list(predicted))[:2]
+        actual = overlap_pick + [31]
+        self.prefetcher.update_actual(actual)
+
+        metrics = self.prefetcher.get_metrics()
+        self.assertEqual(metrics["queries_total"], 1)
+        self.assertGreater(metrics["query_hit_rate"], 0.0)
+        self.assertGreater(metrics["expert_precision"], 0.0)
+        self.assertGreater(metrics["expert_recall"], 0.0)
+        self.assertGreaterEqual(metrics["mean_jaccard"], 0.0)
+        self.assertEqual(metrics["actual_experts_total"], len(set(actual)))
+
 if __name__ == "__main__":
     unittest.main()
