@@ -7,49 +7,50 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <!-- Interactive Ambient Particle Canvas -->
+  <!-- Interactive Particle Background Canvas -->
   <canvas id="bgCanvas"></canvas>
 
   <div class="app-container">
-    <!-- Top Frosted Glass Navigation Bar -->
+    <!-- Top Glass Header -->
     <header class="top-header">
       <div class="brand-section">
-        <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
           <button id="mobileMenuBtn" class="nav-tab" style="padding: 0.25rem 0.5rem; font-size: 1rem; display: none;" title="Toggle Sidebar">☰</button>
           <div class="logo-badge">H</div>
           <div class="brand-name">HAIL <span>Cognitive Studio</span></div>
         </div>
       </div>
 
-      <!-- Apple Segmented Pill Tabs -->
+      <!-- Center View Tabs -->
       <nav class="view-tabs">
-        <a class="nav-tab active" data-view="chat">Chat Console</a>
-        <a class="nav-tab" data-view="memory">Memory Lattice</a>
-        <a class="nav-tab" data-view="doc">Doc Preview</a>
+        <a class="nav-tab active" data-view="chat">CHAT CONSOLE</a>
+        <a class="nav-tab" data-view="memory">MEMORY LATTICE</a>
+        <a class="nav-tab" data-view="doc">DOC PREVIEW</a>
       </nav>
 
-      <!-- Right Controls: Model Selector, Mode Flag & Settings -->
-      <div class="model-selector-box">
-        <div id="modelContainer" style="display: flex; align-items: center; gap: 0.5rem; font-size: 12px; background: rgba(255,255,255,0.75); padding: 0.35rem 0.75rem; border-radius: var(--radius-pill); border: 1px solid var(--glass-border-subtle); box-shadow: var(--shadow-sm);">
-          <span id="modelStatusDot" style="width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, 0.4);" title="Active Engine Status"></span>
-          <span style="color: var(--launch-muted); font-weight: 500; font-size: 11.5px;">Model:</span>
-          <select id="unifiedModelSelect" class="select-model" style="min-width: 170px; padding: 0.1rem 0.2rem; font-weight: 500; cursor: pointer;">
+      <!-- Right Unified Model Selector, Execution Mode & Settings -->
+      <div class="model-selector-box" style="display: flex; gap: 0.5rem; align-items: center;">
+        <div id="modelContainer" style="display: flex; align-items: center; gap: 0.35rem; font-size: 11px; background: rgba(255,255,255,0.7); padding: 0.25rem 0.6rem; border-radius: 6px; border: 1px solid var(--launch-border);">
+          <span id="modelStatusDot" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e;" title="Active Engine Status"></span>
+          <span style="color: var(--launch-ink); font-weight: 600; font-size: 11px;">Model:</span>
+          <select id="unifiedModelSelect" class="select-model" style="min-width: 200px; padding: 0.2rem 0.5rem; font-size: 11px; font-weight: 500; cursor: pointer;">
             <option value="">Loading Models...</option>
           </select>
         </div>
 
-        <div id="modeContainer" style="display: flex; align-items: center; gap: 0.5rem; font-size: 12px; background: rgba(255,255,255,0.75); padding: 0.35rem 0.75rem; border-radius: var(--radius-pill); border: 1px solid var(--glass-border-subtle); box-shadow: var(--shadow-sm);">
-          <span style="color: var(--launch-muted); font-weight: 500; font-size: 11.5px;">Flag:</span>
-          <select id="executionModeSelect" class="select-model" style="min-width: 115px; padding: 0.1rem 0.2rem; font-weight: 600; cursor: pointer; color: var(--launch-ink);">
+        <!-- Mode Selector: Fast, Safe, Eval -->
+        <div id="modeContainer" style="display: flex; align-items: center; gap: 0.35rem; font-size: 11px; background: rgba(255,255,255,0.7); padding: 0.25rem 0.6rem; border-radius: 6px; border: 1px solid var(--launch-border);">
+          <span style="color: var(--launch-ink); font-weight: 600; font-size: 11px;">Flag:</span>
+          <select id="executionModeSelect" class="select-model" style="min-width: 130px; padding: 0.2rem 0.5rem; font-size: 11px; font-weight: 600; cursor: pointer; color: #1e1b4b;">
             <option value="fast" selected>⚡ Fast Mode</option>
             <option value="safe">🛡️ Safe Mode</option>
             <option value="eval">🧪 Eval Mode</option>
           </select>
         </div>
 
-        <button id="applySettingsBtn" class="nav-tab" style="padding: 0.38rem 0.95rem; font-size: 12px; font-weight: 600; background: var(--launch-lilac); color: #ffffff; border: none; border-radius: var(--radius-pill); cursor: pointer; transition: all 0.2s ease; box-shadow: 0 2px 8px rgba(121, 82, 245, 0.25);">Apply</button>
+        <button id="applySettingsBtn" class="nav-tab" style="padding: 0.35rem 0.75rem; font-size: 11px; font-weight: 700; background: var(--accent-purple); color: #ffffff; border-color: rgba(139, 92, 246, 0.4); border-radius: var(--radius-btn); cursor: pointer; transition: all 0.2s ease;">Apply Settings</button>
 
-        <button id="clearMemoriesBtn" class="nav-tab" style="padding: 0.38rem 0.85rem; font-size: 11.5px; border-radius: var(--radius-pill); background: rgba(0,0,0,0.03);">Clear</button>
+        <button id="clearMemoriesBtn" class="nav-tab" style="padding: 0.35rem 0.65rem; font-size: 11px;">Clear Memory</button>
       </div>
     </header>
 
@@ -58,14 +59,14 @@
       <!-- Left Sidebar: Memory Lattice & Documents Gallery -->
       <aside class="sidebar memory-drawer">
         <button id="newChatBtn" class="new-chat-btn">
-          <span style="font-size: 14px; font-weight: 400;">+</span> New Chat Session
+          <span>+</span> New Chat Session
         </button>
 
         <!-- Document Repository Gallery -->
         <div class="doc-gallery-section">
           <div class="sidebar-section-title">
-            <span>Workspace Documents</span>
-            <span id="docCountBadge" style="color: var(--launch-lilac); font-size: 10.5px; font-weight: 600;">Docs</span>
+            <span>📄 Workspace Documents</span>
+            <span id="docCountBadge" style="color: var(--accent-purple); font-size: 10px;">Docs</span>
           </div>
           <div id="docQuickList" class="doc-list">
             <div class="doc-item active" data-doc="seatbelt_dangers">
@@ -84,23 +85,23 @@
         </div>
 
         <!-- HydrusMoE 4-Tier Memory & Security Telemetry Widget -->
-        <div id="moeTelemetryBox" style="background: rgba(255,255,255,0.7); border: 1px solid var(--glass-border-subtle); border-radius: var(--radius-md); padding: 0.85rem; display: flex; flex-direction: column; gap: 0.6rem; box-shadow: var(--shadow-sm);">
-          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; font-weight: 600; color: var(--launch-ink);">
+        <div id="moeTelemetryBox" style="background: rgba(255,255,255,0.55); border: 1px solid var(--launch-border); border-radius: var(--radius-md); padding: 0.65rem; display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.4rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 600; color: var(--launch-ink);">
             <span>🛡️ HydrusMoE Telemetry</span>
-            <span id="moeSecurityShield" style="color: var(--color-green); font-size: 10.5px; font-weight: 600; background: var(--color-green-soft); padding: 0.15rem 0.45rem; border-radius: var(--radius-pill); border: 1px solid var(--color-green-border);">🔒 AES-256</span>
+            <span id="moeSecurityShield" style="color: #22c55e; font-size: 10px; font-weight: 600;">🔒 AES-256</span>
           </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; font-size: 10.5px;">
-            <div style="background: var(--color-green-soft); border: 1px solid var(--color-green-border); padding: 0.35rem 0.55rem; border-radius: var(--radius-xs);">
-              <span style="color: #065f46; font-weight: 600;">GPU VRAM:</span> <span id="vramTelemetry" style="font-family: var(--font-mono); font-weight: 600;">0MB</span>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; font-size: 10px;">
+            <div style="background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.25); padding: 0.25rem 0.4rem; border-radius: 4px;">
+              <span style="color: #15803d; font-weight: 600;">GPU VRAM:</span> <span id="vramTelemetry">0MB</span>
             </div>
-            <div style="background: var(--color-amber-soft); border: 1px solid var(--color-amber-border); padding: 0.35rem 0.55rem; border-radius: var(--radius-xs);">
-              <span style="color: #92400e; font-weight: 600;">Host RAM:</span> <span id="ramTelemetry" style="font-family: var(--font-mono); font-weight: 600;">0MB</span>
+            <div style="background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.25); padding: 0.25rem 0.4rem; border-radius: 4px;">
+              <span style="color: #a16207; font-weight: 600;">Host RAM:</span> <span id="ramTelemetry">0MB</span>
             </div>
-            <div style="background: var(--color-blue-soft); border: 1px solid var(--color-blue-border); padding: 0.35rem 0.55rem; border-radius: var(--radius-xs);">
-              <span style="color: #1e40af; font-weight: 600;">SSD Hit:</span> <span id="ssdTelemetry" style="font-family: var(--font-mono); font-weight: 600;">100%</span>
+            <div style="background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.25); padding: 0.25rem 0.4rem; border-radius: 4px;">
+              <span style="color: #1d4ed8; font-weight: 600;">SSD Hit:</span> <span id="ssdTelemetry">100%</span>
             </div>
-            <div style="background: var(--color-purple-soft); border: 1px solid var(--color-purple-border); padding: 0.35rem 0.55rem; border-radius: var(--radius-xs);">
-              <span style="color: #5b21b6; font-weight: 600;">Prefetch:</span> <span id="prefetchTelemetry" style="font-family: var(--font-mono); font-weight: 600;">85%</span>
+            <div style="background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.25); padding: 0.25rem 0.4rem; border-radius: 4px;">
+              <span style="color: #7e22ce; font-weight: 600;">Prefetch:</span> <span id="prefetchTelemetry">85%</span>
             </div>
           </div>
         </div>
@@ -108,13 +109,13 @@
         <!-- Stratified Memory Lattice Graph & Memory Nodes -->
         <div class="memory-section" style="flex: 1; display: flex; flex-direction: column; gap: 0.75rem;">
           <div class="sidebar-section-title">
-            <span>Stratified Memory</span>
+            <span>🧠 Stratified Memory</span>
             <span id="memoryBadge" class="memory-tag" style="margin:0;">0 Facts</span>
           </div>
 
           <!-- Live Lattice Graph Canvas -->
-          <div style="border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--glass-border-subtle); box-shadow: var(--shadow-sm);">
-            <canvas id="latticeCanvas" style="width: 100%; height: 110px; background: rgba(22, 26, 56, 0.85); display: block;"></canvas>
+          <div style="border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-glass);">
+            <canvas id="latticeCanvas" style="width: 100%; height: 110px; background: rgba(0,0,0,0.3); display: block;"></canvas>
           </div>
 
           <div id="memoryList" class="memory-box" style="flex: 1; overflow-y: auto;"></div>
@@ -126,24 +127,24 @@
         <div id="chatFeed" class="chat-messages">
           <div class="welcome-hero">
             <h1 class="welcome-title">HAIL Cognitive Studio</h1>
-            <p class="welcome-subtitle">Edge-native local intelligence grounded by Stratified Memory Lattice &amp; zero-trust security.</p>
+            <p class="welcome-subtitle">Edge-native local AI engine grounded by Stratified Memory Lattice &amp; Active Security Gateway.</p>
 
             <div class="prompt-suggestions">
               <button class="suggestion-card" data-prompt="Show preview of seatbelt_dangers.md">
-                <strong style="color: var(--launch-lilac);">📄 View Document Preview</strong>
+                <strong style="display:block; color:var(--accent-purple); margin-bottom:2px;">📄 View Document Preview</strong>
                 <span>Open live rendered preview of seatbelt_dangers.md</span>
               </button>
               <button class="suggestion-card" data-prompt="Explain HAIL System Architecture">
-                <strong style="color: #0284c7;">⚡ HAIL Architecture</strong>
-                <span>Learn about HCL, SML, and HydrusMoE tiered memory</span>
+                <strong style="display:block; color:var(--accent-cyan); margin-bottom:2px;">⚡ HAIL Architecture</strong>
+                <span>Learn about HCL, SML, and HydrusOPT</span>
               </button>
               <button class="suggestion-card" data-prompt="Show my memory facts">
-                <strong style="color: #059669;">🧠 Inspect Memory Lattice</strong>
-                <span>Check facts and beliefs retained in surface strata</span>
+                <strong style="display:block; color:var(--accent-green); margin-bottom:2px;">🧠 Inspect Memory Lattice</strong>
+                <span>Check facts retained in surface strata</span>
               </button>
               <button class="suggestion-card" data-prompt="Create doc about CMG Cognitive Memory Gateway">
-                <strong style="color: #7c3aed;">🚀 Create New Document</strong>
-                <span>Generate and render cited multi-chapter markdown doc</span>
+                <strong style="display:block; color:var(--accent-purple); margin-bottom:2px;">🚀 Create New Document</strong>
+                <span>Generate and render new markdown doc</span>
               </button>
             </div>
           </div>
@@ -164,16 +165,16 @@
           <div class="doc-panel-title">
             <span>📄</span>
             <span id="docPreviewTitle">seatbelt_dangers.md</span>
-            <span id="autoSaveStatus" style="font-size: 11px; color: var(--color-green); opacity: 0; transition: opacity 0.3s ease; margin-left: 0.5rem; font-weight: 500;">• Autosaved</span>
+            <span id="autoSaveStatus" style="font-size: 10px; color: var(--color-lichen); opacity: 0; transition: opacity 0.3s ease; margin-left: 0.5rem; font-weight: normal;">• Autosaved</span>
           </div>
-          <div style="display: flex; gap: 0.4rem; align-items: center;">
-            <button id="saveDocBtn" class="nav-tab" style="font-size: 11px; padding: 0.25rem 0.65rem; background: var(--color-green-soft); color: #065f46; border-color: var(--color-green-border);" title="Save Document to Disk">💾 Save</button>
-            <button id="downloadDocBtn" class="nav-tab" style="font-size: 11px; padding: 0.25rem 0.65rem;" title="Download Markdown File">📥 Download</button>
-            <button id="deleteDocBtn" class="nav-tab" style="font-size: 11px; padding: 0.25rem 0.65rem; color: #ef4444;" title="Delete Document">🗑️</button>
-            <span style="border-left: 1px solid var(--glass-border-subtle); height: 16px; margin: 0 0.2rem;"></span>
-            <button id="tabRenderedBtn" class="nav-tab active" style="font-size: 11px; padding: 0.25rem 0.65rem;">Rendered</button>
-            <button id="tabRawBtn" class="nav-tab" style="font-size: 11px; padding: 0.25rem 0.65rem;">Raw Markdown</button>
-            <button id="closeDocPreviewBtn" class="nav-tab" style="font-size: 11px; padding: 0.25rem 0.55rem;">✕</button>
+          <div style="display: flex; gap: 0.35rem; align-items: center;">
+            <button id="saveDocBtn" class="nav-tab" style="font-size: 10px; padding: 0.2rem 0.5rem; background: rgba(50,143,100,0.15); color: var(--color-lichen); border-color: rgba(50,143,100,0.3);" title="Save Document to Disk">💾 Save</button>
+            <button id="downloadDocBtn" class="nav-tab" style="font-size: 10px; padding: 0.2rem 0.5rem;" title="Download Markdown File">📥 Download</button>
+            <button id="deleteDocBtn" class="nav-tab" style="font-size: 10px; padding: 0.2rem 0.5rem; color: #ef4444;" title="Delete Document">🗑️</button>
+            <span style="border-left: 1px solid var(--launch-border); height: 16px; margin: 0 0.15rem;"></span>
+            <button id="tabRenderedBtn" class="nav-tab active" style="font-size: 10px; padding: 0.2rem 0.5rem;">Rendered</button>
+            <button id="tabRawBtn" class="nav-tab" style="font-size: 10px; padding: 0.2rem 0.5rem;">Raw Markdown</button>
+            <button id="closeDocPreviewBtn" class="nav-tab" style="font-size: 10px; padding: 0.2rem 0.5rem;">✕</button>
           </div>
         </div>
         <div id="docPreviewContent" class="doc-panel-body markdown-body">
